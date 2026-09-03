@@ -1654,15 +1654,145 @@ body.rain-theme {
 }
 
 @media (max-width: 768px) {
+  :root {
+    --safe-top: env(safe-area-inset-top, 10px);
+    --safe-bottom: env(safe-area-inset-bottom, 16px);
+  }
+
+  body {
+    -webkit-tap-highlight-color: transparent;
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .app-container {
+    padding: var(--safe-top) 12px var(--safe-bottom) 12px;
+  }
+
   .cockpit-grid {
     grid-template-columns: 1fr;
+    gap: 14px;
   }
+
   .column-center {
     grid-column: span 1;
+    order: 0;
   }
+
   .app-header {
     flex-direction: column;
     gap: 12px;
-    align-items: flex-start;
+    align-items: stretch;
+    padding-bottom: 12px;
+  }
+
+  .header-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .header-actions button {
+    flex: 1;
+    justify-content: center;
+    min-height: 42px;
+  }
+
+  .route-chips-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 6px 0;
+  }
+  .route-chips-row::-webkit-scrollbar {
+    display: none;
+  }
+  .route-chip {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  .time-slider {
+    height: 10px;
+  }
+
+  .time-slider::-webkit-slider-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
+  .toast-container {
+    bottom: calc(var(--safe-bottom) + 16px);
+    width: 90%;
+    max-width: 380px;
+  }
+}
+
+@media (max-width: 480px) {
+  .countdown-digits {
+    font-size: 46px;
+  }
+
+  .avatar-stage {
+    height: 360px;
+  }
+
+  .zone-pill {
+    padding: 3px 8px;
+    font-size: 10px;
+    gap: 4px;
+  }
+
+  .pill-head { top: 35px; right: 8px; }
+  .pill-torso { top: 110px; right: 8px; }
+  .pill-backpack { top: 120px; left: 8px; }
+  .pill-legs { top: 220px; right: 8px; }
+  .pill-shoes { top: auto; bottom: 32px; right: 8px; }
+
+  .mode-btn {
+    padding: 8px 4px;
+    min-height: 52px;
+  }
+
+  .m-name {
+    font-size: 11px;
+  }
+
+  .gear-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .gear-checkbox-card {
+    min-height: 48px;
+    padding: 8px 10px;
+  }
+
+  .route-inputs {
+    padding: 10px;
+  }
+
+  .map-container {
+    height: 240px;
+  }
+
+  .ribbon-track {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .btn-action-small {
+    padding: 8px 14px;
+    font-size: 12px;
+    min-height: 40px;
+  }
+
+  .app-footer {
+    flex-direction: column;
+    gap: 6px;
+    text-align: center;
   }
 }
