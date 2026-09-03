@@ -39,9 +39,9 @@ const PLACES_DATABASE = [
 
 const SCENARIOS = {
   live: {
-    name: "IIT Kanpur (Live Doppler)",
+    name: "Live Doppler Nowcast",
     skyTitle: "Live Sky Status",
-    skySubtitle: "Fetching Doppler radar at 26.51°N, 80.23°E...",
+    skySubtitle: "Connecting to local Doppler radar...",
     skyIcon: "🌤️",
     stopMinutes: 0,
     rainProfile: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -49,8 +49,8 @@ const SCENARIOS = {
     puddleRisk: "Dry (< 1 cm)",
     rainIntensity: "dry_now",
     lightning: false,
-    adviceHeadline: "Safe to walk on Campus",
-    adviceDesc: "Live atmospheric radar shows dry/gentle conditions over IIT Kanpur.",
+    adviceHeadline: "Safe conditions outdoors",
+    adviceDesc: "Live atmospheric radar shows dry/gentle conditions in your area.",
     routePockets: [
       { name: "Main Gate", dist: "0.0 km", rain: "dry", text: "0 mm/h" },
       { name: "SAC Circle", dist: "0.8 km", rain: "dry", text: "0 mm/h" },
@@ -1262,15 +1262,19 @@ function validateForecastPayload(payload) {
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
+  if (typeof AbortController !== 'undefined') {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(id);
+      return response;
+    } catch (error) {
+      clearTimeout(id);
+      throw error;
+    }
+  } else {
+    return await fetch(url, options);
   }
 }
 
@@ -1383,18 +1387,18 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
       puddleRisk: currentPrecip > 4 ? "High (4-6 cm)" : currentPrecip > 1 ? "Moderate (2-3 cm)" : "Low (< 1 cm)",
       rainIntensity: currentPrecip > 5 ? 'heavy' : currentPrecip > 0.3 ? 'light' : 'dry_now',
       lightning: wcode >= 95 || currentPrecip > 8,
-      adviceHeadline: stopMins > 0 ? `Rain easing in ~${stopMins} mins (Wait 1 Chai)` : "100% Clear Skies at IIT Kanpur",
+      adviceHeadline: stopMins > 0 ? `Rain easing in ~${stopMins} mins (Wait 1 Chai)` : `100% Clear Skies at ${placeName.split(',')[0]}`,
       adviceDesc: stopMins > 0 
         ? `Live Doppler nowcast detects active precipitation (${currentPrecip.toFixed(1)} mm/h). Stepping out now without gear will soak clothes. Rain clears in ~${stopMins} mins.` 
-        : "Zero precipitation detected over campus. Perfect weather to step out.",
+        : `Zero precipitation detected over ${placeName.split(',')[0]}. Perfect weather to step out.`,
       routePockets: [
-        { name: "Main Gate", dist: "0.0 km", rain: currentPrecip > 4 ? "heavy" : currentPrecip > 0.3 ? "light" : "dry", text: `${currentPrecip.toFixed(1)} mm/h` },
-        { name: "SAC Circle", dist: "0.8 km", rain: currentPrecip > 2 ? "moderate" : currentPrecip > 0.3 ? "light" : "dry", text: `${(currentPrecip * 0.7).toFixed(1)} mm/h` },
-        { name: "Library", dist: "1.8 km", rain: stopMins > 30 ? "light" : "dry", text: stopMins > 30 ? "0.5 mm/h" : "0 mm/h" }
+        { name: "Origin Point", dist: "0.0 km", rain: currentPrecip > 4 ? "heavy" : currentPrecip > 0.3 ? "light" : "dry", text: `${currentPrecip.toFixed(1)} mm/h` },
+        { name: "Mid Route", dist: `${(appState.routeDistanceKm * 0.5).toFixed(1)} km`, rain: currentPrecip > 2 ? "moderate" : currentPrecip > 0.3 ? "light" : "dry", text: `${(currentPrecip * 0.7).toFixed(1)} mm/h` },
+        { name: "Destination", dist: `${appState.routeDistanceKm.toFixed(1)} km`, rain: stopMins > 30 ? "light" : "dry", text: stopMins > 30 ? "0.5 mm/h" : "0 mm/h" }
       ],
       routeAlert: isRainingNow 
-        ? `⚠️ Live Doppler alert: Active rain cell (${currentPrecip.toFixed(1)} mm/h) over campus route.` 
-        : `🟢 Clear campus skies detected along Main Gate to Library route.`
+        ? `⚠️ Live Doppler alert: Active rain cell (${currentPrecip.toFixed(1)} mm/h) over travel route.` 
+        : `🟢 Clear skies detected along travel route.`
     };
 
     // 5. Sanity Audit & Local Cache Storage with Timestamp
@@ -1408,7 +1412,10 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     }));
 
     appState.currentScenarioData = validated;
-    document.getElementById('livePulsingDot').textContent = `● LIVE (${placeName.split(',')[0]})`;
+    const shortPlace = placeName.split(',')[0].trim();
+    document.getElementById('livePulsingDot').textContent = `● LIVE (${shortPlace})`;
+    const engLabel = document.getElementById('engineLabel');
+    if (engLabel) engLabel.textContent = `${shortPlace} Live`;
     updateUI();
   } catch (err) {
     console.warn("Live weather fetch failed, attempting cached fallback:", err);
@@ -1470,6 +1477,155 @@ function showToast(message, duration = 3200) {
     toast.style.transition = 'all 0.3s ease';
     setTimeout(() => toast.remove(), 300);
   }, duration);
+}
+
+// ============================================================================
+// 9.5 MULTI-TIER GEOLOCATION ENGINE (GPS + Reverse Geocode + IP Fallback)
+// ============================================================================
+
+async function detectLocationWithFallback(isUserTriggered = false) {
+  const btn = document.getElementById('btnAutoDetect');
+  const engLabel = document.getElementById('engineLabel');
+  
+  if (isUserTriggered && btn) {
+    btn.innerHTML = '<span class="pulse-indicator"></span> 📡 Locating...';
+    showToast("📡 Acquiring GPS satellite fix...", 3000);
+  }
+
+  // Reverse geocode coordinates to friendly city / neighborhood name
+  async function getFriendlyLocationName(lat, lon, fallbackName) {
+    try {
+      const res = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}`);
+      if (res.ok) {
+        const data = await res.json();
+        const feat = data.features && data.features[0];
+        const p = feat && feat.properties;
+        if (p) {
+          const parts = [p.name || p.district, p.city || p.county, p.country].filter(Boolean);
+          if (parts.length > 0) return parts.slice(0, 2).join(', ');
+        }
+      }
+    } catch (e) {
+      console.warn("Reverse geocode failed:", e);
+    }
+    return fallbackName;
+  }
+
+  // IP-based Geolocation Fallback (free, HTTPS, fast, worldwide)
+  async function fetchIpLocation() {
+    try {
+      const res = await fetch('https://ipapi.co/json/');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.latitude && data.longitude) {
+          const placeName = [data.city, data.country_name].filter(Boolean).join(', ') || "Local City (IP)";
+          return { lat: parseFloat(data.latitude), lon: parseFloat(data.longitude), name: placeName };
+        }
+      }
+    } catch (e) {
+      console.warn("ipapi.co failed, trying geojs:", e);
+    }
+
+    try {
+      const res2 = await fetch('https://get.geojs.io/v1/ip/geo.json');
+      if (res2.ok) {
+        const data2 = await res2.json();
+        if (data2.latitude && data2.longitude) {
+          const placeName = [data2.city, data2.country].filter(Boolean).join(', ') || "Local City (IP)";
+          return { lat: parseFloat(data2.latitude), lon: parseFloat(data2.longitude), name: placeName };
+        }
+      }
+    } catch (e2) {
+      console.warn("geojs.io failed:", e2);
+    }
+
+    return null;
+  }
+
+  function applyLocation(lat, lon, placeName, source) {
+    appState.origin = placeName;
+    appState.originCoords = { lat, lon };
+
+    try {
+      localStorage.setItem('rainstop_last_lat', String(lat));
+      localStorage.setItem('rainstop_last_lon', String(lon));
+      localStorage.setItem('rainstop_last_name', placeName);
+    } catch (e) {}
+
+    const inputO = document.getElementById('inputOrigin');
+    if (inputO) inputO.value = placeName;
+    if (originMarker) originMarker.setLatLng([lat, lon]);
+    if (mapInstance) mapInstance.setView([lat, lon], 14);
+
+    const shortPlace = placeName.split(',')[0].trim();
+    if (engLabel) engLabel.textContent = `${shortPlace} Live`;
+
+    fetchLiveOpenMeteo(lat, lon, placeName);
+
+    if (btn) btn.innerHTML = '📍 Auto-Detect';
+    if (isUserTriggered) {
+      showToast(`📍 Location locked (${source}): <strong>${placeName}</strong>`, 4000);
+    }
+  }
+
+  // Instant display of cached coordinates on first load (no waiting)
+  if (!isUserTriggered) {
+    try {
+      const savedLat = parseFloat(localStorage.getItem('rainstop_last_lat'));
+      const savedLon = parseFloat(localStorage.getItem('rainstop_last_lon'));
+      const savedName = localStorage.getItem('rainstop_last_name');
+      if (!isNaN(savedLat) && !isNaN(savedLon)) {
+        applyLocation(savedLat, savedLon, savedName || "Saved Location", "Cached");
+      }
+    } catch (e) {}
+  }
+
+  // 1. Query Browser GPS (with 10-second timeout, allowing cached fixes up to 5 minutes)
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const placeName = await getFriendlyLocationName(lat, lon, "Your GPS Location");
+        applyLocation(lat, lon, placeName, "GPS");
+      },
+      async (err) => {
+        console.warn("Browser GPS unavailable or timed out, triggering IP Geolocation fallback:", err ? err.message : '');
+        if (isUserTriggered) {
+          showToast("⚠️ GPS prompt dismissed/unavailable. Falling back to city IP...", 3500);
+        }
+        const ipLoc = await fetchIpLocation();
+        if (ipLoc) {
+          applyLocation(ipLoc.lat, ipLoc.lon, ipLoc.name, "IP Geo");
+        } else {
+          // Last resort fallback
+          try {
+            const savedLat = parseFloat(localStorage.getItem('rainstop_last_lat'));
+            const savedLon = parseFloat(localStorage.getItem('rainstop_last_lon'));
+            const savedName = localStorage.getItem('rainstop_last_name');
+            if (!isNaN(savedLat) && !isNaN(savedLon)) {
+              applyLocation(savedLat, savedLon, savedName || "Saved Location", "Cached");
+              return;
+            }
+          } catch (e) {}
+          applyLocation(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name, "Default");
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 300000
+      }
+    );
+  } else {
+    // Browser has no geolocation API -> IP Geolocation
+    const ipLoc = await fetchIpLocation();
+    if (ipLoc) {
+      applyLocation(ipLoc.lat, ipLoc.lon, ipLoc.name, "IP Geo");
+    } else {
+      applyLocation(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name, "Default");
+    }
+  }
 }
 
 // ============================================================================
@@ -1617,19 +1773,9 @@ function setupEventListeners() {
     if (offlineBanner) offlineBanner.classList.remove('hidden');
   });
 
-  // GPS button
+  // GPS button with multi-tier detection
   document.getElementById('btnAutoDetect').addEventListener('click', () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          fetchLiveOpenMeteo(pos.coords.latitude, pos.coords.longitude, "Your GPS Location");
-          if (mapInstance) mapInstance.setView([pos.coords.latitude, pos.coords.longitude], 15);
-        },
-        () => fetchLiveOpenMeteo(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name)
-      );
-    } else {
-      fetchLiveOpenMeteo(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name);
-    }
+    detectLocationWithFallback(true);
   });
 
   // Ground truth rain button
@@ -1885,7 +2031,7 @@ window.addEventListener('DOMContentLoaded', () => {
     updateUI();
   }, 30000);
 
-  // 3. Fetch live weather (URL params, GPS auto-detect, or default)
+  // 3. Fetch live weather (URL params, Cached location, or High-Accuracy GPS / IP Fallback)
   const urlParams = new URLSearchParams(window.location.search);
   const paramLat = parseFloat(urlParams.get('lat'));
   const paramLon = parseFloat(urlParams.get('lon'));
@@ -1900,19 +2046,9 @@ window.addEventListener('DOMContentLoaded', () => {
     if (originMarker) originMarker.setLatLng([paramLat, paramLon]);
     if (mapInstance) mapInstance.setView([paramLat, paramLon], 15);
     fetchLiveOpenMeteo(paramLat, paramLon, sharedName);
-  } else if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        fetchLiveOpenMeteo(pos.coords.latitude, pos.coords.longitude, "Your Current Location");
-        if (mapInstance) mapInstance.setView([pos.coords.latitude, pos.coords.longitude], 15);
-      },
-      () => {
-        fetchLiveOpenMeteo(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name);
-      },
-      { timeout: 3500 }
-    );
   } else {
-    fetchLiveOpenMeteo(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name);
+    // Automatically detect real user location: Cached -> Precision GPS -> IP Geolocation Fallback
+    detectLocationWithFallback(false);
   }
 
   // Automatic Nowcast Heartbeat: Re-fetch every 2.5 minutes while tab is active
