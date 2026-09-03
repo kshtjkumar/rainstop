@@ -936,6 +936,37 @@ function updateUI() {
     if (btnAlert) btnAlert.classList.remove('active');
     if (alertBtnText) alertBtnText.textContent = "Alert When Dry";
   }
+
+  // 11. Synchronize Mobile Quick Summary Strip
+  const stripTimer = document.getElementById('stripTimerText');
+  const stripTier = document.getElementById('stripTierText');
+  const stripModeIcon = document.getElementById('stripModeIcon');
+  const stripModeText = document.getElementById('stripModeText');
+
+  if (stripTimer) {
+    if (data.stopMinutes > 0) {
+      stripTimer.textContent = `${data.stopMinutes}m to dry`;
+    } else {
+      stripTimer.textContent = `Sky is dry`;
+    }
+  }
+
+  if (stripTier && result) {
+    stripTier.textContent = `Tier ${result.tier} ${result.tier === 0 ? 'Bone Dry' : 'Damp'}`;
+  }
+
+  if (stripModeIcon && stripModeText) {
+    if (appState.transportMode === 'car') {
+      stripModeIcon.textContent = '🚗';
+      stripModeText.textContent = 'Car Mode';
+    } else if (appState.transportMode === 'scooter') {
+      stripModeIcon.textContent = '🛵';
+      stripModeText.textContent = '2-Wheeler';
+    } else {
+      stripModeIcon.textContent = '🚶';
+      stripModeText.textContent = 'Walk Mode';
+    }
+  }
 }
 
 // ============================================================================
@@ -1784,6 +1815,45 @@ function setupEventListeners() {
   });
 }
 
+function initMobileNavigation() {
+  const tabBtns = document.querySelectorAll('.mobile-tab-btn');
+  const colRadar = document.getElementById('colRadar');
+  const colAvatar = document.getElementById('colAvatar');
+  const colRoute = document.getElementById('colRoute');
+
+  const columns = {
+    colRadar,
+    colAvatar,
+    colRoute
+  };
+
+  // Set default active tab to Radar on load
+  if (colRadar) colRadar.classList.add('tab-active');
+
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-target');
+      tabBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      Object.keys(columns).forEach(id => {
+        if (columns[id]) {
+          if (id === targetId) {
+            columns[id].classList.add('tab-active');
+            if (id === 'colRoute' && mapInstance) {
+              setTimeout(() => mapInstance.invalidateSize(), 150);
+            }
+          } else {
+            columns[id].classList.remove('tab-active');
+          }
+        }
+      });
+
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+}
+
 // ============================================================================
 // 10. BOOTSTRAP & SERVICE WORKER REGISTRATION
 // ============================================================================
@@ -1800,6 +1870,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   window.rainEngineInstance = new RainEngine('rainCanvas');
   setupEventListeners();
+  initMobileNavigation();
   initInteractiveMap();
 
   // 1. Immediately update UI synchronously on millisecond 0 with live clock time

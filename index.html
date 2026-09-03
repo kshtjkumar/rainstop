@@ -149,11 +149,27 @@
     <!-- Toast Notification Container -->
     <div id="toastContainer" class="toast-container"></div>
 
+    <!-- 📱 Mobile Quick Summary Strip (Visible only on mobile <= 768px) -->
+    <div class="mobile-quick-strip" id="mobileQuickStrip">
+      <div class="quick-chip" id="chipStopSummary">
+        <span class="chip-icon">⏱️</span>
+        <span class="chip-label" id="stripTimerText">Checking rain...</span>
+      </div>
+      <div class="quick-chip" id="chipTierSummary">
+        <span class="chip-icon">👕</span>
+        <span class="chip-label" id="stripTierText">Tier 0 Dry</span>
+      </div>
+      <div class="quick-chip" id="chipModeSummary">
+        <span class="chip-icon" id="stripModeIcon">🚶</span>
+        <span class="chip-label" id="stripModeText">Walk Mode</span>
+      </div>
+    </div>
+
     <!-- Main Grid: 3-Column Cockpit -->
     <main class="cockpit-grid">
 
       <!-- Left Column: Location & Live Rain Stop Countdown -->
-      <section class="column-left">
+      <section class="column-left" id="colRadar">
         <!-- Live Status Card -->
         <div class="glass-card status-card">
           <div class="card-header">
@@ -216,8 +232,8 @@
         </div>
       </section>
 
-      <!-- Center Column: Visual Human Body Soak Avatar & Consequence Tier -->
-      <section class="column-center">
+      <!-- Center Column: Avatar Soak Simulator & Physical Gear -->
+      <section class="column-center" id="colAvatar">
         <div class="glass-card avatar-cockpit">
           <div class="card-header">
             <span class="section-label">HUMAN SOAK SIMULATOR</span>
@@ -458,8 +474,8 @@
         </div>
       </section>
 
-      <!-- Right Column: Route Planner, Transport Modes, Gear & Scrubber -->
-      <section class="column-right">
+      <!-- Right Column: Interactive Route Weather Ribbon & Departure Comparison -->
+      <section class="column-right" id="colRoute">
         <!-- Route & Commute Planner Card -->
         <div class="glass-card planner-card">
           <div class="card-header">
@@ -577,6 +593,22 @@
         <span>Desktop Companion for Electron</span>
       </div>
     </footer>
+
+    <!-- 📱 Mobile Floating Tab Navigation Bar (Visible only on mobile <= 768px) -->
+    <nav class="mobile-tab-bar" id="mobileTabBar" aria-label="Mobile Navigation">
+      <button class="mobile-tab-btn active" data-target="colRadar">
+        <span class="tab-icon">⏱️</span>
+        <span class="tab-label">Nowcast</span>
+      </button>
+      <button class="mobile-tab-btn" data-target="colAvatar">
+        <span class="tab-icon">🧍</span>
+        <span class="tab-label">Commuter</span>
+      </button>
+      <button class="mobile-tab-btn" data-target="colRoute">
+        <span class="tab-icon">🗺️</span>
+        <span class="tab-label">Route</span>
+      </button>
+    </nav>
   </div>
 
   <script src="app.js"></script>

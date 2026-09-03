@@ -64,6 +64,11 @@ async function runLiveDeploymentAudit() {
   assert(liveHtml.includes('id="ribbonTrack"'), "HTML contains dynamic route ribbonTrack");
   assert(liveHtml.includes('id="departureSlider"'), "HTML contains departureSlider");
   assert(liveHtml.includes('id="btnAutoDetect"'), "HTML contains GPS auto-detect button");
+  assert(liveHtml.includes('id="mobileTabBar"'), "HTML contains #mobileTabBar for decluttered mobile navigation");
+  assert(liveHtml.includes('id="mobileQuickStrip"'), "HTML contains #mobileQuickStrip for sticky mobile status");
+  assert(liveHtml.includes('id="colRadar"'), "HTML contains #colRadar");
+  assert(liveHtml.includes('id="colAvatar"'), "HTML contains #colAvatar");
+  assert(liveHtml.includes('id="colRoute"'), "HTML contains #colRoute");
   console.log("  ✅ Live HTML contains all essential mobile & biophysical SVG nodes.");
 
   // 3. LIVE CSS & MOBILE RESPONSIVENESS AUDIT
@@ -77,11 +82,14 @@ async function runLiveDeploymentAudit() {
   assert(liveCss.includes('.umbrella-gear'), "CSS contains .umbrella-gear styles");
   assert(liveCss.includes('.boots-gear'), "CSS contains .boots-gear styles");
   assert(liveCss.includes('.bagcover-gear'), "CSS contains .bagcover-gear styles");
+  assert(liveCss.includes('.mobile-tab-bar'), "CSS contains .mobile-tab-bar floating nav styles");
+  assert(liveCss.includes('.mobile-quick-strip'), "CSS contains .mobile-quick-strip styles");
   console.log("  ✅ Live CSS includes full mobile-first, notch, and touch-target rules.");
 
   // 4. LIVE JAVASCRIPT SANDBOX EXECUTION & SYNTAX AUDIT
   console.log("\n[4/5] Auditing Live JavaScript Execution in Isolated Sandbox...");
   const liveJs = fetchedFiles['/app.js'];
+  assert(liveJs.includes('initMobileNavigation'), "app.js contains initMobileNavigation");
 
   // DOM Mock for full sandbox testing
   const elements = {};
