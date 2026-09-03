@@ -1817,41 +1817,55 @@ function setupEventListeners() {
 
 function initMobileNavigation() {
   const tabBtns = document.querySelectorAll('.mobile-tab-btn');
-  const colRadar = document.getElementById('colRadar');
-  const colAvatar = document.getElementById('colAvatar');
-  const colRoute = document.getElementById('colRoute');
+  const chipStopSummary = document.getElementById('chipStopSummary');
+  const chipTierSummary = document.getElementById('chipTierSummary');
+  const chipModeSummary = document.getElementById('chipModeSummary');
 
-  const columns = {
-    colRadar,
-    colAvatar,
-    colRoute
-  };
+  function scrollToSection(targetId) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    const yOffset = -70;
+    const y = el.getBoundingClientRect().top + window.pageYOffset + yOffset;
+    window.scrollTo({ top: y, behavior: 'smooth' });
 
-  // Set default active tab to Radar on load
-  if (colRadar) colRadar.classList.add('tab-active');
+    tabBtns.forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-target') === targetId);
+    });
+
+    if (targetId === 'colRoute' && mapInstance) {
+      setTimeout(() => mapInstance.invalidateSize(), 200);
+    }
+  }
 
   tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
       const targetId = btn.getAttribute('data-target');
-      tabBtns.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-
-      Object.keys(columns).forEach(id => {
-        if (columns[id]) {
-          if (id === targetId) {
-            columns[id].classList.add('tab-active');
-            if (id === 'colRoute' && mapInstance) {
-              setTimeout(() => mapInstance.invalidateSize(), 150);
-            }
-          } else {
-            columns[id].classList.remove('tab-active');
-          }
-        }
-      });
-
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      scrollToSection(targetId);
     });
   });
+
+  if (chipStopSummary) chipStopSummary.addEventListener('click', () => scrollToSection('colRadar'));
+  if (chipTierSummary) chipTierSummary.addEventListener('click', () => scrollToSection('colAvatar'));
+  if (chipModeSummary) chipModeSummary.addEventListener('click', () => scrollToSection('colAvatar'));
+
+  // Highlight active pill on scroll
+  if ('IntersectionObserver' in window) {
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const id = entry.target.id;
+          tabBtns.forEach(b => {
+            b.classList.toggle('active', b.getAttribute('data-target') === id);
+          });
+        }
+      });
+    }, { rootMargin: '-20% 0px -60% 0px' });
+
+    ['colRadar', 'colAvatar', 'colRoute'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) observer.observe(el);
+    });
+  }
 }
 
 // ============================================================================

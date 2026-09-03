@@ -1718,39 +1718,57 @@ body.rain-theme {
     text-overflow: ellipsis;
   }
 
-  /* Cockpit Grid & Mobile Tab Switching Panels */
+  /* Cockpit Grid & Mobile Natural Adaptive Flow */
   .cockpit-grid {
-    grid-template-columns: 1fr;
-    gap: 0;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 16px !important;
   }
 
   .column-left,
   .column-center,
   .column-right {
-    display: none !important;
-    grid-column: span 1;
-    width: 100%;
-  }
-
-  .column-left.tab-active,
-  .column-center.tab-active,
-  .column-right.tab-active {
     display: flex !important;
-    flex-direction: column;
+    flex-direction: column !important;
+    width: 100% !important;
     gap: 14px;
-    animation: mobileTabFade 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    scroll-margin-top: 65px;
   }
 
-  @keyframes mobileTabFade {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+  /* Natural Mobile Ordering: Sky Timer ➔ Avatar Soak Simulator ➔ Route & Map */
+  .column-left { order: 1; }
+  .column-center { order: 2; }
+  .column-right { order: 3; }
+
+  /* Mobile Avatar Stage Auto-Adjustment */
+  .avatar-cockpit {
+    overflow: hidden;
   }
+
+  .avatar-stage {
+    height: 380px !important;
+    max-height: 52vh;
+    padding: 8px 0;
+  }
+
+  .human-avatar-svg {
+    max-width: 250px;
+    height: 100%;
+    margin: 0 auto;
+    display: block;
+  }
+
+  .zone-pill {
+    padding: 4px 9px;
+    font-size: 10.5px;
+    gap: 5px;
+  }
+
+  .pill-head { top: 32px; right: 8px; }
+  .pill-torso { top: 110px; right: 8px; }
+  .pill-backpack { top: 120px; left: 8px; }
+  .pill-legs { top: 215px; right: 8px; }
+  .pill-shoes { top: auto; bottom: 22px; right: 8px; }
 
   /* Floating Bottom Tab Navigation Bar */
   .mobile-tab-bar {
