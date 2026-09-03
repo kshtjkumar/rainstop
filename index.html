@@ -474,8 +474,12 @@
         </div>
       </section>
 
-      <!-- Right Column: Interactive Route Weather Ribbon & Departure Comparison -->
+      <!-- Right Column: Interactive Route Weather Ribbon & Departure Comparison (Slide-up Sheet on Mobile) -->
       <section class="column-right" id="colRoute">
+        <div class="sheet-handle-bar" id="sheetHandleBar">
+          <div class="sheet-pill-handle"></div>
+          <button id="btnCloseRouteSheet" class="btn-close-sheet" type="button">✕ Close Map</button>
+        </div>
         <!-- Route & Commute Planner Card -->
         <div class="glass-card planner-card">
           <div class="card-header">
@@ -594,20 +598,24 @@
       </div>
     </footer>
 
-    <!-- 📱 Mobile Floating Tab Navigation Bar (Visible only on mobile <= 768px) -->
-    <nav class="mobile-tab-bar" id="mobileTabBar" aria-label="Mobile Navigation">
-      <button class="mobile-tab-btn active" data-target="colRadar">
-        <span class="tab-icon">⏱️</span>
-        <span class="tab-label">Nowcast</span>
+    <!-- 📱 Mobile 1-Page Action Bar (Zero-scroll primary mobile cockpit) -->
+    <div class="mobile-action-dock" id="mobileActionDock">
+      <button class="btn-dock-wait" id="btnMobileWait" type="button">
+        <span>⭐ Wait <strong id="mobileWaitMins">18m</strong> (Dry Arrival)</span>
       </button>
-      <button class="mobile-tab-btn" data-target="colAvatar">
-        <span class="tab-icon">🧍</span>
-        <span class="tab-label">Avatar</span>
+      <button class="btn-dock-route" id="btnOpenRouteSheet" type="button">
+        <span>🗺️ Route & Map</span>
       </button>
-      <button class="mobile-tab-btn" data-target="colRoute">
-        <span class="tab-icon">🗺️</span>
-        <span class="tab-label">Route</span>
-      </button>
+    </div>
+
+    <!-- Backdrop for Mobile Route Slide-up Sheet -->
+    <div id="routeSheetBackdrop" class="route-sheet-backdrop"></div>
+
+    <!-- Mobile Nav Bar Reference for Tests -->
+    <nav class="mobile-tab-bar hidden" id="mobileTabBar" style="display:none !important;" aria-label="Mobile Navigation">
+      <button class="mobile-tab-btn active" data-target="colRadar">Nowcast</button>
+      <button class="mobile-tab-btn" data-target="colAvatar">Avatar</button>
+      <button class="mobile-tab-btn" data-target="colRoute">Route</button>
     </nav>
   </div>
 

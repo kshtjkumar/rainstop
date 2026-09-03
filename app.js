@@ -967,6 +967,12 @@ function updateUI() {
       stripModeText.textContent = 'Walk Mode';
     }
   }
+
+  // 12. Synchronize 1-Page Mobile Action Dock
+  const mobileWaitMins = document.getElementById('mobileWaitMins');
+  if (mobileWaitMins) {
+    mobileWaitMins.textContent = data.stopMinutes > 0 ? `${data.stopMinutes}m` : 'Now';
+  }
 }
 
 // ============================================================================
@@ -1816,54 +1822,38 @@ function setupEventListeners() {
 }
 
 function initMobileNavigation() {
-  const tabBtns = document.querySelectorAll('.mobile-tab-btn');
-  const chipStopSummary = document.getElementById('chipStopSummary');
-  const chipTierSummary = document.getElementById('chipTierSummary');
-  const chipModeSummary = document.getElementById('chipModeSummary');
+  const colRoute = document.getElementById('colRoute');
+  const btnOpenRouteSheet = document.getElementById('btnOpenRouteSheet');
+  const btnCloseRouteSheet = document.getElementById('btnCloseRouteSheet');
+  const routeSheetBackdrop = document.getElementById('routeSheetBackdrop');
+  const btnMobileWait = document.getElementById('btnMobileWait');
+  const slider = document.getElementById('departureSlider');
 
-  function scrollToSection(targetId) {
-    const el = document.getElementById(targetId);
-    if (!el) return;
-    const yOffset = -70;
-    const y = el.getBoundingClientRect().top + window.pageYOffset + yOffset;
-    window.scrollTo({ top: y, behavior: 'smooth' });
-
-    tabBtns.forEach(b => {
-      b.classList.toggle('active', b.getAttribute('data-target') === targetId);
-    });
-
-    if (targetId === 'colRoute' && mapInstance) {
-      setTimeout(() => mapInstance.invalidateSize(), 200);
+  function openRouteSheet() {
+    if (colRoute) colRoute.classList.add('sheet-open');
+    if (routeSheetBackdrop) routeSheetBackdrop.classList.add('active');
+    if (mapInstance) {
+      setTimeout(() => mapInstance.invalidateSize(), 300);
     }
   }
 
-  tabBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const targetId = btn.getAttribute('data-target');
-      scrollToSection(targetId);
-    });
-  });
+  function closeRouteSheet() {
+    if (colRoute) colRoute.classList.remove('sheet-open');
+    if (routeSheetBackdrop) routeSheetBackdrop.classList.remove('active');
+  }
 
-  if (chipStopSummary) chipStopSummary.addEventListener('click', () => scrollToSection('colRadar'));
-  if (chipTierSummary) chipTierSummary.addEventListener('click', () => scrollToSection('colAvatar'));
-  if (chipModeSummary) chipModeSummary.addEventListener('click', () => scrollToSection('colAvatar'));
+  if (btnOpenRouteSheet) btnOpenRouteSheet.addEventListener('click', openRouteSheet);
+  if (btnCloseRouteSheet) btnCloseRouteSheet.addEventListener('click', closeRouteSheet);
+  if (routeSheetBackdrop) routeSheetBackdrop.addEventListener('click', closeRouteSheet);
 
-  // Highlight active pill on scroll
-  if ('IntersectionObserver' in window) {
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const id = entry.target.id;
-          tabBtns.forEach(b => {
-            b.classList.toggle('active', b.getAttribute('data-target') === id);
-          });
-        }
-      });
-    }, { rootMargin: '-20% 0px -60% 0px' });
-
-    ['colRadar', 'colAvatar', 'colRoute'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) observer.observe(el);
+  if (btnMobileWait && slider) {
+    btnMobileWait.addEventListener('click', () => {
+      const stopMins = (appState.currentScenarioData && appState.currentScenarioData.stopMinutes !== undefined)
+        ? appState.currentScenarioData.stopMinutes
+        : 0;
+      slider.value = Math.min(45, stopMins);
+      slider.dispatchEvent(new Event('input'));
+      showToast(`⏱️ Departure set for ${stopMins > 0 ? `+${stopMins}m` : 'NOW'} (Dry arrival)!`);
     });
   }
 }
