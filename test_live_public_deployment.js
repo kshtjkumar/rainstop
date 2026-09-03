@@ -68,10 +68,13 @@ async function runLiveDeploymentAudit() {
   assert(liveHtml.includes('id="btnOpenRouteSheet"'), "HTML contains #btnOpenRouteSheet");
   assert(liveHtml.includes('id="btnCloseRouteSheet"'), "HTML contains #btnCloseRouteSheet");
   assert(liveHtml.includes('id="routeSheetBackdrop"'), "HTML contains #routeSheetBackdrop");
+  assert(liveHtml.includes('id="btnEngineMeteo"'), "HTML contains #btnEngineMeteo");
+  assert(liveHtml.includes('id="btnEngineWeatherNext3"'), "HTML contains #btnEngineWeatherNext3 for Google DeepMind AI engine");
+  assert(liveHtml.includes('id="weatherNext3Strip"'), "HTML contains #weatherNext3Strip for 3-hour AI horizon");
   assert(liveHtml.includes('id="colRadar"'), "HTML contains #colRadar");
   assert(liveHtml.includes('id="colAvatar"'), "HTML contains #colAvatar");
   assert(liveHtml.includes('id="colRoute"'), "HTML contains #colRoute");
-  console.log("  ✅ Live HTML contains all essential mobile & biophysical SVG nodes.");
+  console.log("  ✅ Live HTML contains all essential mobile, biophysical, & WeatherNext 3 SVG nodes.");
 
   // 3. LIVE CSS & MOBILE RESPONSIVENESS AUDIT
   console.log("\n[3/5] Auditing Live CSS & Mobile Breakpoints...");
@@ -86,12 +89,14 @@ async function runLiveDeploymentAudit() {
   assert(liveCss.includes('.bagcover-gear'), "CSS contains .bagcover-gear styles");
   assert(liveCss.includes('.mobile-action-dock'), "CSS contains .mobile-action-dock 1-page action dock styles");
   assert(liveCss.includes('#colRoute.sheet-open'), "CSS contains #colRoute.sheet-open slide-up styles");
+  assert(liveCss.includes('.weathernext3-box'), "CSS contains .weathernext3-box AI horizon styles");
   console.log("  ✅ Live CSS includes full mobile-first, notch, and touch-target rules.");
 
   // 4. LIVE JAVASCRIPT SANDBOX EXECUTION & SYNTAX AUDIT
   console.log("\n[4/5] Auditing Live JavaScript Execution in Isolated Sandbox...");
   const liveJs = fetchedFiles['/app.js'];
   assert(liveJs.includes('initMobileNavigation'), "app.js contains initMobileNavigation");
+  assert(liveJs.includes('renderWeatherNext3'), "app.js contains renderWeatherNext3 function");
 
   // DOM Mock for full sandbox testing
   const elements = {};

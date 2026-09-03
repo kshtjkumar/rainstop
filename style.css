@@ -157,7 +157,57 @@ body.rain-theme {
 .header-controls {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
+}
+
+/* Weather Engine Toggle Capsule */
+.engine-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 30px;
+  padding: 3px;
+  gap: 3px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.engine-toggle-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.22s ease;
+  white-space: nowrap;
+}
+
+.engine-toggle-btn:hover {
+  color: #ffffff;
+}
+
+.engine-toggle-btn.active {
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+#btnEngineMeteo.active {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.3), rgba(14, 165, 233, 0.15));
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+#btnEngineWeatherNext3.active {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.35), rgba(56, 189, 248, 0.2));
+  border-color: rgba(168, 85, 247, 0.7);
+  color: #c084fc;
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.45);
 }
 
 .scenario-selector {
@@ -382,7 +432,105 @@ body.rain-theme {
 .bar-col.heavy { background: #ef4444; }
 .bar-col.moderate { background: #f59e0b; }
 .bar-col.light { background: #38bdf8; }
-.bar-col.dry { background: rgba(255, 255, 255, 0.1); }
+/* 🧠 Google DeepMind WeatherNext 3: 3-Hour AI Horizon Strip */
+.weathernext3-box {
+  margin-top: 14px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  box-shadow: inset 0 0 16px rgba(168, 85, 247, 0.08);
+}
+
+.weathernext3-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.wn3-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: linear-gradient(135deg, #c084fc, #38bdf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.wn3-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  padding: 2px 7px;
+  border-radius: 12px;
+}
+
+.weathernext3-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.horizon-card {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 3px;
+  transition: transform 0.2s, border-color 0.2s;
+}
+
+.horizon-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.hz-time {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+.hz-icon {
+  font-size: 20px;
+  margin: 2px 0;
+}
+
+.hz-temp {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.hz-precip {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.hz-precip.wet {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.hz-precip.dry {
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.15);
+}
+
+.hz-tier {
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
 
 /* Advice Card */
 .advice-card {
@@ -1751,6 +1899,7 @@ body.rain-theme {
 
   #colRadar .card-header,
   #colRadar .minutely-trend,
+  #colRadar .weathernext3-box,
   #colRadar .advice-card,
   #colRadar .stats-row {
     display: none !important;

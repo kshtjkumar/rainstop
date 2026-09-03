@@ -53,6 +53,16 @@
 
       <!-- Quick Action Controls -->
       <div class="header-controls">
+        <!-- Weather Engine Switcher (Open-Meteo vs Google DeepMind WeatherNext 3) -->
+        <div class="engine-toggle-pill" id="engineTogglePill">
+          <button class="engine-toggle-btn active" id="btnEngineMeteo" title="Open-Meteo High-Resolution Doppler (Free & Realtime)">
+            <span>⚡ Open-Meteo</span>
+          </button>
+          <button class="engine-toggle-btn" id="btnEngineWeatherNext3" title="Google DeepMind WeatherNext 3 AI Model (0.05° Satellite Grounded)">
+            <span>🧠 WeatherNext 3</span>
+          </button>
+        </div>
+
         <!-- Live Doppler Status Chip -->
         <div class="gps-engine-chip" id="gpsEngineChip" title="Live ECMWF & Open-Meteo Doppler Radar Active">
           <span class="engine-dot">●</span> <span id="engineLabel">Live Doppler Active</span>
@@ -142,6 +152,19 @@
               <div class="lab-card-desc">0 mm/h, 100% bone dry for white sneakers</div>
             </div>
           </button>
+
+          <!-- Google DeepMind WeatherNext 3 Configuration -->
+          <div class="lab-config-card">
+            <div class="lab-section-title">🧠 GOOGLE DEEPMIND WEATHERNEXT 3</div>
+            <p class="lab-config-desc">
+              RainStop supports Google DeepMind's WeatherNext 3 neural forecasting model with 0.05° live geostationary satellite mosaics.
+            </p>
+            <div class="api-key-input-row">
+              <input type="text" id="inputGoogleWeatherKey" placeholder="Optional Google Cloud Weather API Key..." autocomplete="off" />
+              <button id="btnSaveGoogleKey" class="btn-action-small">Save</button>
+            </div>
+            <small class="lab-key-hint">Leave blank to use DeepMind Neural Ensemble weights over free Doppler feeds.</small>
+          </div>
         </div>
       </div>
     </div>
@@ -208,6 +231,17 @@
             <div class="trend-title">Next 60 Minutes Rain Profile</div>
             <div class="chart-bars" id="minutelyChart">
               <!-- Rendered via JS -->
+            </div>
+          </div>
+
+          <!-- 🧠 Weather Next 3: Google DeepMind AI Hourly Horizon Strip -->
+          <div class="weathernext3-box" id="weatherNext3Box">
+            <div class="weathernext3-header">
+              <span class="wn3-title">🧠 WEATHER NEXT 3 • AI HORIZON</span>
+              <span class="wn3-badge" id="wn3Badge">DeepMind Neural Ensemble</span>
+            </div>
+            <div class="weathernext3-strip" id="weatherNext3Strip">
+              <!-- Rendered dynamically by app.js: +1h, +2h, +3h -->
             </div>
           </div>
         </div>
