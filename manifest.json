@@ -1,0 +1,37 @@
+{
+  "name": "RainStop • Human Wetness & Commute Planner",
+  "short_name": "RainStop",
+  "description": "Real-time rainfall radar and relatable human wetness consequences for your commute.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#070d18",
+  "theme_color": "#070d18",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "IIT Kanpur Live",
+      "url": "./index.html?loc=iitk",
+      "description": "Check overhead rainfall at IIT Kanpur"
+    },
+    {
+      "name": "Live Doppler Radar",
+      "url": "./index.html?mode=radar",
+      "description": "Check 60-minute rain stop countdown"
+    }
+  ],
+  "categories": ["weather", "utilities", "travel", "navigation"]
+}

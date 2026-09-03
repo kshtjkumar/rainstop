@@ -1,0 +1,21 @@
+{
+  "name": "rainstop-desktop",
+  "version": "1.0.0",
+  "description": "Human Wetness & Precipitation Commute Planner Desktop Cockpit",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "weather",
+    "rainfall",
+    "commute",
+    "nowcasting"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

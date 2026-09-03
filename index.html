@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+  <title>RainStop • Human Wetness & Commute Planner</title>
+  <meta name="description" content="No abstract mm/h math. RainStop tells you exactly when rainfall will stop and how wet you'll get walking or driving with/without an umbrella." />
+  <meta name="theme-color" content="#070d18" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="RainStop" />
+  
+  <!-- PWA Manifest & App Icons -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+
+  <!-- OpenGraph / Social Sharing -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="RainStop • Human Wetness & Commute Forecast" />
+  <meta property="og:description" content="Know exactly when rain will stop at your lat-long and calculate your human wetness consequence." />
+  <meta property="og:image" content="icon.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- Leaflet Interactive Map Engine -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="rain-theme">
+  <!-- Offline Network Banner -->
+  <div id="offlineBanner" class="offline-banner hidden">
+    <span>⚠️ You are offline. Showing cached forecast & offline map.</span>
+  </div>
+
+  <!-- Dynamic Background Particle Rain Canvas -->
+  <canvas id="rainCanvas"></canvas>
+  <div class="lightning-flash" id="lightning"></div>
+
+  <div class="app-container">
+    <!-- Top Navigation / Header -->
+    <header class="app-header glass-card">
+      <div class="logo-area">
+        <div class="logo-icon">🌧️</div>
+        <div>
+          <h1 class="logo-title">RainStop <span class="badge-tag">Human Forecast</span></h1>
+          <p class="logo-subtitle">No abstract math. Just how wet you'll actually get.</p>
+        </div>
+      </div>
+
+      <!-- Quick Action Controls -->
+      <div class="header-controls">
+        <!-- Live Doppler Status Chip -->
+        <div class="gps-engine-chip" id="gpsEngineChip" title="Live ECMWF & Open-Meteo Doppler Radar Active">
+          <span class="engine-dot">●</span> <span id="engineLabel">IIT Kanpur Live</span>
+        </div>
+
+        <!-- 🔔 Alert Me When Rain Stops Button -->
+        <button id="btnAlertRainStop" class="btn-icon btn-alert" title="Ring chime & send alert when overhead rain stops">
+          <span class="icon">🔔</span> <span id="alertBtnText">Alert When Dry</span>
+        </button>
+
+        <!-- 📤 Share Forecast Button -->
+        <button id="btnShareForecast" class="btn-icon btn-share" title="Share commute wetness forecast on WhatsApp / Social">
+          <span class="icon">📤</span> Share
+        </button>
+
+        <!-- 🧪 Simulation Labs Drawer Toggle -->
+        <button id="btnOpenLabs" class="btn-icon btn-labs" title="Test different weather scenarios (Monsoon, Drizzle, Gale)">
+          <span class="icon">🧪</span> Labs
+        </button>
+
+        <!-- PWA Install Button (Shown on Mobile/Desktop when available) -->
+        <button id="btnInstallPwa" class="btn-icon pwa-install-btn hidden" title="Install App to Home Screen">
+          <span class="icon">📲</span> Install
+        </button>
+
+        <button id="btnAutoDetect" class="btn-icon" title="Use Current GPS">
+          <span class="icon">🧭</span> GPS
+        </button>
+
+        <button id="btnReportRain" class="btn-icon btn-report" title="Ground truth: It is raining right now!">
+          <span class="icon">🌧️</span> Rain Here
+        </button>
+      </div>
+    </header>
+
+    <!-- 🧪 Simulation Labs Modal Drawer -->
+    <div class="modal-overlay" id="labsModal">
+      <div class="glass-card modal-content">
+        <div class="modal-header">
+          <div class="modal-title-wrap">
+            <span class="modal-icon">🧪</span>
+            <h3>Weather Simulation Labs</h3>
+          </div>
+          <button id="btnCloseLabs" class="btn-close-modal">×</button>
+        </div>
+        <p class="modal-desc">
+          Test the human wetness physics and commute consequences under various extreme meteorological conditions.
+        </p>
+        
+        <div class="labs-scenario-grid">
+          <button class="lab-scenario-card active" data-scenario="live">
+            <div class="lab-card-icon">📍</div>
+            <div class="lab-card-body">
+              <div class="lab-card-title">Live: IIT Kanpur</div>
+              <div class="lab-card-desc">Real Doppler nowcasting from ECMWF radar</div>
+            </div>
+          </button>
+
+          <button class="lab-scenario-card" data-scenario="monsoon">
+            <div class="lab-card-icon">⛈️</div>
+            <div class="lab-card-body">
+              <div class="lab-card-title">Monsoon Cloudburst</div>
+              <div class="lab-card-desc">14.5 mm/h downpour + 8cm deep road puddles</div>
+            </div>
+          </button>
+
+          <button class="lab-scenario-card" data-scenario="drizzle">
+            <div class="lab-card-icon">🌦️</div>
+            <div class="lab-card-body">
+              <div class="lab-card-title">Light Campus Drizzle</div>
+              <div class="lab-card-desc">1.2 mm/h mist, safe for light hoodies</div>
+            </div>
+          </button>
+
+          <button class="lab-scenario-card" data-scenario="sideways">
+            <div class="lab-card-icon">💨</div>
+            <div class="lab-card-body">
+              <div class="lab-card-title">Gale & Sideways Rain</div>
+              <div class="lab-card-desc">38 km/h wind blowing under umbrellas</div>
+            </div>
+          </button>
+
+          <button class="lab-scenario-card" data-scenario="clearing">
+            <div class="lab-card-icon">🌤️</div>
+            <div class="lab-card-body">
+              <div class="lab-card-title">Clear Dry Window</div>
+              <div class="lab-card-desc">0 mm/h, 100% bone dry for white sneakers</div>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Main Grid: 3-Column Cockpit -->
+    <main class="cockpit-grid">
+
+      <!-- Left Column: Location & Live Rain Stop Countdown -->
+      <section class="column-left">
+        <!-- Live Status Card -->
+        <div class="glass-card status-card">
+          <div class="card-header">
+            <span class="section-label">OVERHEAD SKY STATUS</span>
+            <span class="live-dot" id="livePulsingDot">● LIVE</span>
+          </div>
+
+          <div class="sky-condition-banner" id="skyBanner">
+            <div class="sky-icon" id="skyIcon">⛈️</div>
+            <div class="sky-info">
+              <h2 id="skyTitle">Heavy Downpour</h2>
+              <p id="skySubtitle">Bucket rain. Sideways gusts.</p>
+            </div>
+          </div>
+
+          <!-- The Core Question: When will it stop? -->
+          <div class="stop-countdown-box">
+            <div class="countdown-caption">WHEN WILL IT STOP?</div>
+            <div class="countdown-timer" id="rainStopTimer">
+              <span class="timer-num" id="stopMinutes">18</span>
+              <span class="timer-unit">MINUTES</span>
+            </div>
+            <div class="stop-time-clock" id="stopClockTime">Calculating live clearance window...</div>
+            <div class="timeline-bar-wrap">
+              <div class="timeline-bar" id="timelineBar" style="width: 72%;"></div>
+            </div>
+            <div class="timeline-labels">
+              <span>Now (Heavy)</span>
+              <span>10m (Easing)</span>
+              <span>18m (Dry Sky)</span>
+            </div>
+          </div>
+
+          <!-- 60-Minute Micro-Rain Trend -->
+          <div class="minutely-trend">
+            <div class="trend-title">Next 60 Minutes Rain Profile</div>
+            <div class="chart-bars" id="minutelyChart">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Smart Decision Advice Card -->
+        <div class="glass-card advice-card" id="adviceCard">
+          <div class="advice-badge" id="adviceBadge">☕ THE CHAI RULE</div>
+          <h3 class="advice-headline" id="adviceHeadline">Wait 15 minutes for 1 Chai</h3>
+          <p class="advice-desc" id="adviceDesc">
+            If you leave right now, your jeans and shoes will be drenched. Waiting just 15 minutes drops your wetness level by <strong>85%</strong>.
+          </p>
+          <div class="quick-stats-row">
+            <div class="stat-pill">
+              <span class="stat-label">Puddle Depth</span>
+              <span class="stat-val" id="puddleRisk">High (4-6 cm)</span>
+            </div>
+            <div class="stat-pill">
+              <span class="stat-label">Wind Gust</span>
+              <span class="stat-val" id="windSpeed">28 km/h</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Center Column: Visual Human Body Soak Avatar & Consequence Tier -->
+      <section class="column-center">
+        <div class="glass-card avatar-cockpit">
+          <div class="card-header">
+            <span class="section-label">HUMAN SOAK SIMULATOR</span>
+            <span class="gear-status-chip" id="gearStatusChip">🌂 Umbrella Active</span>
+          </div>
+
+          <!-- Big Human Consequence Tier Badge -->
+          <div class="consequence-banner" id="consequenceBanner">
+            <div class="tier-badge" id="tierBadge">TIER 2</div>
+            <div class="tier-details">
+              <h2 class="tier-headline" id="tierHeadline">Soggy Socks & Wet Jeans</h2>
+              <p class="tier-subtext" id="tierSubtext">Torso stays dry with umbrella, but road spray and puddles will soak your lower legs.</p>
+            </div>
+          </div>
+
+          <!-- Avatar Anatomy Interactive Visualizer -->
+          <div class="avatar-stage">
+            <div class="avatar-tooltip" id="avatarTooltip">💡 Hover over any zone for biophysical breakdown</div>
+            <!-- SVG Human Body Model with Zones -->
+            <svg class="human-avatar-svg" viewBox="0 0 300 480" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="umbrellaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="#38bdf8"/>
+                  <stop offset="100%" stop-color="#0284c7"/>
+                </linearGradient>
+                <linearGradient id="raincoatGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="#fbbf24"/>
+                  <stop offset="100%" stop-color="#d97706"/>
+                </linearGradient>
+                <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
+
+              <!-- Base Background Layer: Puddles -->
+              <g id="puddleSurface" class="puddle-layer">
+                <ellipse cx="150" cy="432" rx="90" ry="14" fill="#0284c7" opacity="0.3" class="puddle-ripple" />
+                <ellipse cx="150" cy="432" rx="60" ry="8" fill="#38bdf8" opacity="0.4" />
+                <circle cx="95" cy="425" r="2.5" fill="#38bdf8" class="splash-drop d1" />
+                <circle cx="205" cy="428" r="3" fill="#38bdf8" class="splash-drop d2" />
+                <circle cx="120" cy="422" r="2" fill="#38bdf8" class="splash-drop d3" />
+                <circle cx="180" cy="424" r="2" fill="#38bdf8" class="splash-drop d4" />
+              </g>
+
+              <!-- Body Anatomy (Drawn First) -->
+              <!-- Backpack / Bag Zone -->
+              <g id="zoneBackpack" class="avatar-zone" data-zone="backpack">
+                <rect x="68" y="175" width="28" height="65" rx="8" class="body-part part-bag" />
+                <text x="82" y="215" font-size="12" fill="#ffffff" text-anchor="middle" font-family="Inter">🎒</text>
+              </g>
+
+              <!-- Pants & Jeans Zone -->
+              <g id="zoneLegs" class="avatar-zone" data-zone="legs">
+                <path d="M 124 285 L 145 285 L 140 405 L 120 405 Z" class="body-part part-legs" />
+                <path d="M 155 285 L 176 285 L 180 405 L 160 405 Z" class="body-part part-legs" />
+              </g>
+
+              <!-- Shoes & Socks Zone -->
+              <g id="zoneShoes" class="avatar-zone" data-zone="shoes">
+                <path d="M 110 410 L 142 410 L 142 425 L 105 425 Q 105 415 110 410 Z" class="body-part part-shoes" />
+                <path d="M 158 410 L 190 410 Q 195 415 195 425 L 158 425 Z" class="body-part part-shoes" />
+              </g>
+
+              <!-- Torso & Jacket Zone -->
+              <g id="zoneTorso" class="avatar-zone" data-zone="torso">
+                <path d="M 115 170 L 185 170 L 178 280 L 122 280 Z" class="body-part part-torso" />
+                <!-- Left Arm -->
+                <path d="M 115 170 L 85 240 L 98 245 L 122 195 Z" class="body-part part-arm" />
+                <!-- Right Arm -->
+                <path d="M 185 170 L 215 240 L 202 245 L 178 195 Z" class="body-part part-arm" />
+              </g>
+
+              <!-- Head & Hair Zone -->
+              <g id="zoneHead" class="avatar-zone" data-zone="head">
+                <circle cx="150" cy="130" r="32" class="body-part part-head" />
+                <circle cx="140" cy="128" r="3" fill="#cbd5e1" opacity="0.7" />
+                <circle cx="160" cy="128" r="3" fill="#cbd5e1" opacity="0.7" />
+                <path d="M 143 142 Q 150 148 157 142" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round" opacity="0.7" />
+              </g>
+
+              <!-- FOREGROUND OVERLAYS (Drawn In Front of Body) -->
+
+              <!-- Raincoat Layer -->
+              <g id="raincoatLayer" class="raincoat-gear hidden">
+                <!-- Hood -->
+                <path d="M 108 125 Q 150 78 192 125 L 192 172 L 108 172 Z" fill="url(#raincoatGrad)" stroke="#f59e0b" stroke-width="2" opacity="0.95" />
+                <!-- Poncho Body & Sleeves -->
+                <path d="M 70 172 L 230 172 L 208 315 L 92 315 Z" fill="url(#raincoatGrad)" stroke="#f59e0b" stroke-width="2" opacity="0.9" />
+                <line x1="150" y1="172" x2="150" y2="315" stroke="#78350f" stroke-width="2" stroke-dasharray="4 4" />
+              </g>
+
+              <!-- 2-Wheeler Helmet Layer -->
+              <g id="scooterHelmetLayer" class="scooter-gear hidden">
+                <path d="M 110 135 C 110 85 190 85 190 135 C 190 168 178 178 150 178 C 122 178 110 168 110 135 Z" fill="#1e293b" stroke="#f59e0b" stroke-width="3" />
+                <path d="M 122 122 Q 150 112 178 122 L 175 146 Q 150 138 125 146 Z" fill="#38bdf8" stroke="#0284c7" stroke-width="1.5" />
+                <path d="M 60 270 Q 150 240 240 270 L 225 410 Q 150 425 75 410 Z" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 4" opacity="0.7" />
+              </g>
+
+              <!-- Waterproof Boots Layer (Toggled with Boots gear) -->
+              <g id="bootsLayer" class="boots-gear hidden">
+                <path d="M 106 395 L 144 395 L 144 427 L 102 427 Q 102 410 106 395 Z" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9" />
+                <path d="M 156 395 L 194 395 Q 198 410 198 427 L 156 427 Z" fill="#10b981" stroke="#059669" stroke-width="2" opacity="0.9" />
+                <line x1="106" y1="404" x2="144" y2="404" stroke="#ffffff" stroke-width="1.5" opacity="0.7" />
+                <line x1="156" y1="404" x2="194" y2="404" stroke="#ffffff" stroke-width="1.5" opacity="0.7" />
+              </g>
+
+              <!-- Waterproof Bag Cover Layer (Toggled with Bag Cover gear) -->
+              <g id="bagCoverLayer" class="bagcover-gear hidden">
+                <rect x="64" y="172" width="36" height="71" rx="10" fill="rgba(16, 185, 129, 0.45)" stroke="#10b981" stroke-width="2.5" />
+                <text x="82" y="215" font-size="12" fill="#ffffff" text-anchor="middle" font-family="Inter">🛡️</text>
+              </g>
+
+              <!-- Umbrella Layer (Drawn in front, completely visible) -->
+              <g id="umbrellaLayer" class="umbrella-gear hidden">
+                <!-- Shaft & Grip (Held by right hand) -->
+                <line x1="150" y1="90" x2="202" y2="235" stroke="#cbd5e1" stroke-width="4.5" stroke-linecap="round" />
+                <path d="M 202 235 Q 212 245 208 252 Q 200 255 196 248" fill="none" stroke="#94a3b8" stroke-width="4" stroke-linecap="round" />
+                <!-- Umbrella Canopy (Deep, Wide Dome Arc) -->
+                <path d="M 30 112 Q 150 10 270 112 Q 225 96 185 100 Q 150 94 115 100 Q 75 96 30 112 Z" fill="url(#umbrellaGrad)" stroke="#38bdf8" stroke-width="3" filter="url(#glow)" />
+                <!-- Canopy Rib Lines -->
+                <path d="M 150 16 Q 150 55 150 96" fill="none" stroke="#e0f2fe" stroke-width="2" opacity="0.8" />
+                <path d="M 150 16 Q 105 55 115 100" fill="none" stroke="#e0f2fe" stroke-width="1.8" opacity="0.7" />
+                <path d="M 150 16 Q 195 55 185 100" fill="none" stroke="#e0f2fe" stroke-width="1.8" opacity="0.7" />
+                <circle cx="150" cy="14" r="4.5" fill="#f8fafc" stroke="#38bdf8" stroke-width="2" />
+                <!-- Deflection Forcefield Arc -->
+                <path d="M 12 118 Q 150 -12 288 118" fill="none" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 6" opacity="0.8" class="forcefield-pulse" />
+              </g>
+
+              <!-- Car / Cab Cabin Shield Overlay (Encapsulates Entire Commuter) -->
+              <g id="carCabinLayer" class="car-cabin-gear hidden">
+                <rect x="20" y="30" width="260" height="415" rx="35" fill="rgba(56, 189, 248, 0.08)" stroke="#38bdf8" stroke-width="2.5" stroke-dasharray="6 4" class="forcefield-pulse" />
+                <path d="M 45 130 Q 150 35 255 130 L 265 410 Q 150 435 35 410 Z" fill="rgba(15, 23, 42, 0.45)" stroke="#38bdf8" stroke-width="2" />
+                <rect x="75" y="45" width="150" height="26" rx="13" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" />
+                <text x="150" y="62" text-anchor="middle" fill="#38bdf8" font-size="11" font-weight="800" font-family="'JetBrains Mono', monospace">🚗 ENCLOSED CABIN</text>
+              </g>
+            </svg>
+
+            <!-- Interactive Body Zone Callout Badges -->
+            <div class="zone-labels-overlay">
+              <div class="zone-pill pill-head" id="labelHead">
+                <span class="dot"></span> <strong>Hair:</strong> <span class="val">Dry (Shielded)</span>
+              </div>
+              <div class="zone-pill pill-torso" id="labelTorso">
+                <span class="dot"></span> <strong>Torso:</strong> <span class="val">Dry</span>
+              </div>
+              <div class="zone-pill pill-backpack" id="labelBackpack">
+                <span class="dot"></span> <strong>Laptop Bag:</strong> <span class="val">Damp (Use Cover)</span>
+              </div>
+              <div class="zone-pill pill-legs" id="labelLegs">
+                <span class="dot"></span> <strong>Jeans:</strong> <span class="val">Soggy (Splashes)</span>
+              </div>
+              <div class="zone-pill pill-shoes" id="labelShoes">
+                <span class="dot"></span> <strong>Shoes:</strong> <span class="val">Squishy Wet!</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Transport Mode Selector -->
+          <div class="mode-selector-wrap">
+            <div class="selector-label">TRANSPORT MODE</div>
+            <div class="mode-buttons" id="modeButtons">
+              <button class="mode-btn active" data-mode="walk">
+                <span class="m-icon">🚶</span>
+                <span class="m-name">Walk</span>
+                <span class="m-sub">5 km/h</span>
+              </button>
+              <button class="mode-btn" data-mode="scooter">
+                <span class="m-icon">🛵</span>
+                <span class="m-name">2-Wheeler</span>
+                <span class="m-sub">30 km/h</span>
+              </button>
+              <button class="mode-btn" data-mode="car">
+                <span class="m-icon">🚗</span>
+                <span class="m-name">Cab / Car</span>
+                <span class="m-sub">Protected</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Gear & Protection Toggles -->
+          <div class="gear-toggles-wrap">
+            <div class="selector-label">GEAR & PROTECTION</div>
+            <div class="gear-grid">
+              <label class="gear-checkbox-card" id="cardUmbrella">
+                <input type="checkbox" id="gearUmbrella" />
+                <span class="g-icon">🌂</span>
+                <div class="g-info">
+                  <span class="g-title">Umbrella</span>
+                  <span class="g-desc">Head & Torso</span>
+                </div>
+              </label>
+
+              <label class="gear-checkbox-card" id="cardRaincoat">
+                <input type="checkbox" id="gearRaincoat" />
+                <span class="g-icon">🧥</span>
+                <div class="g-info">
+                  <span class="g-title">Raincoat</span>
+                  <span class="g-desc">Body Barrier</span>
+                </div>
+              </label>
+
+              <label class="gear-checkbox-card" id="cardShoeCovers">
+                <input type="checkbox" id="gearShoeCovers" />
+                <span class="g-icon">🥾</span>
+                <div class="g-info">
+                  <span class="g-title">Boots</span>
+                  <span class="g-desc">Puddle Proof</span>
+                </div>
+              </label>
+
+              <label class="gear-checkbox-card" id="cardBagCover">
+                <input type="checkbox" id="gearBagCover" />
+                <span class="g-icon">🎒</span>
+                <div class="g-info">
+                  <span class="g-title">Bag Cover</span>
+                  <span class="g-desc">Electronics</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Real-Life Outfit Safety Checklist -->
+          <div class="outfit-checklist">
+            <div class="check-item danger" id="checkSneakers">
+              <span class="check-icon">👟</span>
+              <span class="check-text">White Sneakers: <strong>Ruined</strong></span>
+            </div>
+            <div class="check-item warning" id="checkLaptop">
+              <span class="check-icon">💻</span>
+              <span class="check-text">Laptop in Bag: <strong>At Risk</strong></span>
+            </div>
+            <div class="check-item safe" id="checkJacket">
+              <span class="check-icon">🧥</span>
+              <span class="check-text">Light Jacket: <strong>Sufficient</strong></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Route Planner, Transport Modes, Gear & Scrubber -->
+      <section class="column-right">
+        <!-- Route & Commute Planner Card -->
+        <div class="glass-card planner-card">
+          <div class="card-header">
+            <span class="section-label">ROUTE COMMUTE PLANNER</span>
+            <span class="duration-tag" id="routeDurationTag">🚶 18 mins</span>
+          </div>
+
+          <!-- Origin / Destination Inputs with Autocomplete & Presets -->
+          <div class="route-inputs-container">
+            <div class="route-inputs">
+              <div class="input-group-wrapper">
+                <div class="input-group">
+                  <span class="input-icon">🟢</span>
+                  <input type="text" id="inputOrigin" value="IIT Kanpur Main Gate" placeholder="Starting point (X)..." autocomplete="off" />
+                  <button id="btnClearOrigin" class="btn-clear" title="Clear">×</button>
+                </div>
+                <!-- Autocomplete Dropdown List -->
+                <div class="autocomplete-dropdown" id="suggestOrigin"></div>
+              </div>
+
+              <div class="input-divider">
+                <span class="route-line"></span>
+                <button id="btnSwapRoute" class="btn-swap" title="Swap locations">⇅</button>
+              </div>
+
+              <div class="input-group-wrapper">
+                <div class="input-group">
+                  <span class="input-icon">🔴</span>
+                  <input type="text" id="inputDest" value="PK Kelkar Library, IITK" placeholder="Destination (Y)..." autocomplete="off" />
+                  <button id="btnClearDest" class="btn-clear" title="Clear">×</button>
+                </div>
+                <!-- Autocomplete Dropdown List -->
+                <div class="autocomplete-dropdown" id="suggestDest"></div>
+              </div>
+            </div>
+
+            <!-- Quick Popular Route Chips (IIT Kanpur & Campus) -->
+            <div class="route-chips-row">
+              <span class="chips-label">Campus Routes:</span>
+              <button class="route-chip active" data-orig="IIT Kanpur Main Gate" data-dest="PK Kelkar Library, IITK" data-dist="1.8">🏫 Main Gate → 📚 Library</button>
+              <button class="route-chip" data-orig="Hall 12 / 13, IITK" data-dest="Academic Area / CSE Dept" data-dist="1.2">🏠 Hall 12 → 💻 CSE Dept</button>
+              <button class="route-chip" data-orig="IIT Kanpur Main Gate" data-dest="Kalyanpur GT Road" data-dist="3.5">🎓 IITK → 🛣️ Kalyanpur</button>
+              <button class="route-chip" data-orig="IIT Kanpur" data-dest="Kanpur Central Station" data-dist="14.5">🚄 IITK → 🚉 Central Station</button>
+            </div>
+
+            <!-- Interactive Live Route Map (Clean & Uncluttered) -->
+            <div class="interactive-map-section">
+              <div id="routeMap" class="route-map-canvas"></div>
+              <button class="btn-floating-recenter" id="btnLocateCampus" title="Recenter on Campus">🎯 Recenter</button>
+            </div>
+
+            <!-- Interactive Route Weather Ribbon (Along-Path Radar) -->
+            <div class="route-weather-ribbon" id="routeWeatherRibbon">
+              <div class="ribbon-header">
+                <span class="ribbon-title">🗺️ RAIN PROFILE ALONG ROUTE (1.8 km)</span>
+                <span class="ribbon-summary" id="routeSummaryBadge">🟢 Clear Campus Flow</span>
+              </div>
+              <div class="ribbon-track" id="ribbonTrack">
+                <!-- Checkpoints rendered via JS -->
+              </div>
+              <div class="ribbon-warning-box" id="ribbonWarningBox">
+                🟢 <strong>Campus Alert:</strong> Light misty conditions around Academic Area. Hoodie is sufficient.
+              </div>
+            </div>
+          </div>
+
+            <!-- Departure Time Scrubber -->
+          <div class="scrubber-section">
+            <div class="scrubber-header">
+              <span class="selector-label">DEPARTURE TIMING SCRUBBER</span>
+              <span class="scrub-time-val" id="scrubDepartureText">Leave NOW (0 min delay)</span>
+            </div>
+            <input type="range" id="departureSlider" min="0" max="45" step="5" value="0" class="time-slider" />
+            <div class="slider-ticks">
+              <span>Now</span>
+              <span>+10m</span>
+              <span>+20m</span>
+              <span>+30m</span>
+              <span>+45m</span>
+            </div>
+          </div>
+
+          <!-- Compare Options Bottom Drawer -->
+          <div class="compare-drawer">
+            <div class="compare-row recommended" id="optionRecommended">
+              <div class="comp-col-icon">⭐</div>
+              <div class="comp-col-info">
+                <div class="comp-title" id="compWaitTitle">Wait for Dry Sky</div>
+                <div class="comp-sub" id="compWaitSub">🟢 92% Drier • Crisp & clean arrival</div>
+              </div>
+              <button class="btn-action-small" id="btnPickWait">Select</button>
+            </div>
+
+            <div class="compare-row" id="optionLeaveNow">
+              <div class="comp-col-icon">🏃</div>
+              <div class="comp-col-info">
+                <div class="comp-title" id="compNowTitle">Leave Now</div>
+                <div class="comp-sub" id="compNowSub">🔴 Soaked Jeans & Squishy Shoes</div>
+              </div>
+              <button class="btn-action-small outline" id="btnPickNow">Select</button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer / Status Bar -->
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span class="pulse-indicator"></span> Real-time Precipitation Doppler Engine • Open-Meteo High-Resolution Nowcast
+      </div>
+      <div class="footer-right">
+        <span>Desktop Companion for Electron</span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
