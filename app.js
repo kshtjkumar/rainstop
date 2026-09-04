@@ -157,7 +157,8 @@ const appState = {
   destCoords: { lat: 26.5127, lon: 80.2349 },
   routeDistanceKm: 1.8,
   mapPinMode: 'origin', // 'origin' | 'dest'
-  weatherEngine: (typeof localStorage !== 'undefined' && localStorage.getItem('rainstop_weather_engine')) || 'openmeteo'
+  weatherEngine: (typeof localStorage !== 'undefined' && localStorage.getItem('rainstop_weather_engine')) || 'openmeteo',
+  userOverrodeDry: false
 };
 
 // ============================================================================
@@ -192,7 +193,7 @@ class RainEngine {
     if (level === 'heavy') this.maxDrops = 320;
     else if (level === 'moderate') this.maxDrops = 180;
     else if (level === 'light') this.maxDrops = 80;
-    else if (level === 'dry_now') this.maxDrops = 15;
+    else if (level === 'dry_now') this.maxDrops = 0; // 100% zero raindrops when dry!
     this.initDrops();
   }
 
@@ -1478,6 +1479,21 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
       hourlyTemp: hourlyTempSlice
     };
 
+    // If user previously confirmed "Dry Here" ground truth, lock dry state
+    if (appState.userOverrodeDry) {
+      payload.skyTitle = "Clear Sky (Ground Confirmed)";
+      payload.skySubtitle = `📍 ${placeName} (${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E) • ${temp}°C • 100% Bone Dry`;
+      payload.skyIcon = "☀️";
+      payload.stopMinutes = 0;
+      payload.rainProfile = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+      payload.puddleRisk = "Dry (< 1 cm)";
+      payload.rainIntensity = 'dry_now';
+      payload.lightning = false;
+      payload.adviceHeadline = `100% Clear Skies at ${placeName.split(',')[0]}`;
+      payload.adviceDesc = `Ground truth confirmed: zero precipitation overhead. Roads are dry, safe for white sneakers.`;
+      payload.routeAlert = `🟢 Clear skies confirmed along travel route.`;
+    }
+
     // 5. Sanity Audit & Local Cache Storage with Timestamp
     const validated = validateForecastPayload(payload);
     SCENARIOS.live = validated;
@@ -1551,8 +1567,10 @@ function showToast(message, duration = 3200) {
   setTimeout(() => {
     toast.style.opacity = '0';
     toast.style.transform = 'translateY(10px)';
-    toast.style.transition = 'all 0.3s ease';
-    setTimeout(() => toast.remove(), 300);
+    setTimeout(() => {
+      if (toast.remove) toast.remove();
+      else if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 300);
   }, duration);
 }
 
@@ -1906,6 +1924,7 @@ function setupEventListeners() {
   const btnReportRain = document.getElementById('btnReportRain');
   if (btnReportRain) {
     btnReportRain.addEventListener('click', () => {
+      appState.userOverrodeDry = false;
       SCENARIOS.live.skyTitle = "Live Rain Shower (Observed)";
       SCENARIOS.live.skyIcon = "🌧️";
       SCENARIOS.live.stopMinutes = 45;
@@ -1914,6 +1933,9 @@ function setupEventListeners() {
       SCENARIOS.live.adviceHeadline = "Rain easing in ~45 mins (Wait 1 Chai)";
       SCENARIOS.live.adviceDesc = "Active overhead precipitation calibrated with live ground observation. Stepping out now without gear will soak clothes. Rain clears in ~45 mins.";
       appState.currentScenarioData = SCENARIOS.live;
+      if (window.rainEngineInstance) {
+        window.rainEngineInstance.setIntensity('moderate', 15);
+      }
       updateUI();
       showToast("🌧️ <strong>Live Rain Confirmed!</strong> Nowcast calibrated to active rain cell.", 4000);
     });
@@ -1923,7 +1945,9 @@ function setupEventListeners() {
   const btnReportDry = document.getElementById('btnReportDry');
   if (btnReportDry) {
     btnReportDry.addEventListener('click', () => {
+      appState.userOverrodeDry = true;
       SCENARIOS.live.skyTitle = "Clear Sky (Ground Confirmed)";
+      SCENARIOS.live.skySubtitle = "0.0 mm/h • 100% Bone Dry Outdoors";
       SCENARIOS.live.skyIcon = "☀️";
       SCENARIOS.live.stopMinutes = 0;
       SCENARIOS.live.rainIntensity = 'dry_now';
@@ -1932,6 +1956,9 @@ function setupEventListeners() {
       SCENARIOS.live.adviceDesc = "User confirmed zero precipitation overhead. Safe to step out in fresh white sneakers.";
       SCENARIOS.live.puddleRisk = "Dry (< 1 cm)";
       appState.currentScenarioData = SCENARIOS.live;
+      if (window.rainEngineInstance) {
+        window.rainEngineInstance.setIntensity('dry_now', 5);
+      }
       updateUI();
       showToast("☀️ <strong>Ground Truth Confirmed!</strong> Nowcast set to 100% dry (Tier 0).", 4000);
     });
