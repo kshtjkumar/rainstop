@@ -214,11 +214,12 @@ async function runLiveDeploymentAudit() {
   assert.strictEqual(manifest.orientation, "portrait-primary", "PWA orientation is portrait-primary");
   assert(manifest.icons && manifest.icons.length > 0, "PWA has application icons defined");
 
-  const swCode = fetchedFiles['/sw.js'];
-  assert(swCode.includes('rainstop-cache-v4'), "Service Worker uses v4 cache");
-  assert(swCode.includes('fetch(event.request)'), "Service Worker uses Network-First strategy");
-  assert(swCode.includes("request.url.startsWith('http')"), "Service Worker guards against non-http schemes");
-  console.log("  ✅ PWA manifest & Service Worker v4 offline strategy verified.");
+  const liveSw = fetchedFiles['/sw.js'];
+  assert(liveSw.includes('rainstop-cache-v6'), "Service Worker uses v6 cache");
+  assert(liveSw.includes('skipWaiting'), "Service Worker activates immediately");
+  assert(liveSw.includes('fetch(event.request)'), "Service Worker uses Network-First strategy");
+  assert(liveSw.includes("request.url.startsWith('http')"), "Service Worker guards against non-http schemes");
+  console.log("  ✅ PWA manifest & Service Worker v6 offline strategy verified.");
 
   console.log("\n==========================================================");
   console.log("🎉 ALL LIVE COMMERCIAL PUBLIC DEPLOYMENT CHECKS PASSED!");
