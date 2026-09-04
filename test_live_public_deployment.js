@@ -69,6 +69,7 @@ async function runLiveDeploymentAudit() {
   assert(liveHtml.includes('id="btnCloseRouteSheet"'), "HTML contains #btnCloseRouteSheet");
   assert(liveHtml.includes('id="routeSheetBackdrop"'), "HTML contains #routeSheetBackdrop");
   assert(liveHtml.includes('id="btnEngineMeteo"'), "HTML contains #btnEngineMeteo");
+  assert(liveHtml.includes('id="btnReportDry"'), "HTML contains #btnReportDry ground truth button");
   assert(liveHtml.includes('id="btnEngineWeatherNext3"'), "HTML contains #btnEngineWeatherNext3 for Google DeepMind AI engine");
   assert(liveHtml.includes('id="weatherNext3Strip"'), "HTML contains #weatherNext3Strip for 3-hour AI horizon");
   assert(liveHtml.includes('id="colRadar"'), "HTML contains #colRadar");

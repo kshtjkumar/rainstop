@@ -50,20 +50,17 @@ function runLiveApiTest() {
           console.log(`✅ [3/5] Multi-Signal Consensus: wcode=${wcode}, isWmoRain=${isWmoRain}, future 3h precip profile=[${minutelySlice.slice(0, 4).join(', ')}...]`);
 
           // Test 4: Stop-Minutes Calculation
-          let baseRate = minutelySlice[0] || 0;
-          if (isWmoRain && baseRate < 0.8) {
-            baseRate = (wcode >= 65 || wcode >= 82 || wcode >= 95) ? 8.5 : (wcode >= 63 || wcode >= 81) ? 4.5 : 2.0;
-          }
-          const currentPrecip = baseRate;
-          const isRainingNow = isWmoRain || currentPrecip > 0.1;
+          const radarRainRate = minutelySlice[0] || 0;
+          const isRainingNow = radarRainRate > 0.1;
+          const currentPrecip = isRainingNow ? radarRainRate : 0.0;
           
           let stopMins = 0;
           if (isRainingNow) {
-            const stopIdx = minutelySlice.findIndex((p, i) => i > 0 && p < 0.1 && (!minutelyCodes[i] || minutelyCodes[i] < 51));
+            const stopIdx = minutelySlice.findIndex((p, i) => i > 0 && p < 0.1);
             stopMins = stopIdx !== -1 ? stopIdx * 15 : 45;
           }
           assert(isRainingNow ? stopMins > 0 : stopMins === 0, "Stop minutes physically consistent with rain state");
-          console.log(`✅ [4/5] Stop Minutes Logic: isRainingNow=${isRainingNow} ➔ stopMinutes=${stopMins} mins`);
+          console.log(`✅ [4/5] Stop Minutes Logic: isRainingNow=${isRainingNow} (rate=${currentPrecip.toFixed(1)} mm/h) ➔ stopMinutes=${stopMins} mins`);
 
           // Test 5: Midnight boundary test (simulate time at 23:45)
           const midnightIdx = json.minutely_15.time.findIndex(t => t.endsWith('23:45'));

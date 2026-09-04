@@ -1397,31 +1397,20 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     // 95, 96, 99: Thunderstorm
     const isWmoRain = (wcode >= 51 && wcode <= 67) || (wcode >= 80 && wcode <= 99);
     
-    // Check hourly model for confirmation
-    let isHourlyRain = false;
-    if (json.hourly && Array.isArray(json.hourly.weathercode)) {
-      const currentHourCode = json.hourly.weathercode[Math.floor(startIndex / 4)] || 0;
-      if ((currentHourCode >= 51 && currentHourCode <= 67) || (currentHourCode >= 80 && currentHourCode <= 99)) {
-        isHourlyRain = true;
-      }
-    }
-
-    let baseRate = minutelyPrecip[0] || 0;
-    if ((isWmoRain || isHourlyRain) && baseRate < 0.8) {
-      baseRate = (wcode >= 65 || wcode >= 82 || wcode >= 95) ? 8.5 : (wcode >= 63 || wcode >= 81) ? 4.5 : 2.0;
-    }
-    const currentPrecip = baseRate;
-    const isRainingNow = isWmoRain || isHourlyRain || currentPrecip > 0.1;
+    // 2. Physical Precipitation Consensus:
+    // A regional WMO code indicates atmospheric conditions (e.g. thunderstorm or rain clouds somewhere in the 10km grid cell).
+    // But whether it is raining ON THE GROUND at the user's location depends on the radar precipitation rate.
+    const radarRainRate = (minutelyPrecip && minutelyPrecip[0] !== undefined) ? Number(minutelyPrecip[0]) : 0;
+    
+    // An active rain shower requires measurable precipitation (> 0.1 mm/h)
+    const isRainingNow = radarRainRate > 0.1;
+    const currentPrecip = isRainingNow ? radarRainRate : 0.0;
 
     // 3. Dynamic Stop-Minutes Calculation
     let stopMins = 0;
     if (isRainingNow) {
-      const stopIdx = minutelyPrecip.findIndex((p, i) => i > 0 && p < 0.1 && (!minutelyCodes[i] || minutelyCodes[i] < 51));
-      if (stopIdx !== -1) {
-        stopMins = stopIdx * 15;
-      } else {
-        stopMins = 45; // Persistent cell
-      }
+      const stopIdx = minutelyPrecip.findIndex((p, i) => i > 0 && p < 0.1);
+      stopMins = stopIdx !== -1 ? stopIdx * 15 : 45; // Persistent cell
     } else {
       stopMins = 0;
     }
@@ -1429,18 +1418,34 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     // 4. Condition Headline & Icon
     let conditionTitle = "Clear Sky / Dry";
     let conditionIcon = "🌤️";
-    if (wcode >= 95) {
-      conditionTitle = "Severe Thunderstorm";
-      conditionIcon = "⛈️";
-    } else if (currentPrecip > 6 || wcode >= 65 || wcode >= 82) {
-      conditionTitle = "Heavy Monsoon Downpour";
-      conditionIcon = "🌧️";
-    } else if (currentPrecip > 2 || wcode >= 63 || wcode >= 81) {
-      conditionTitle = "Active Rain Shower";
-      conditionIcon = "🌧️";
-    } else if (isRainingNow || wcode >= 51) {
-      conditionTitle = "Live Rain / Drizzle";
-      conditionIcon = "🌦️";
+    if (isRainingNow) {
+      if (wcode >= 95 || currentPrecip > 8) {
+        conditionTitle = "Severe Thunderstorm Downpour";
+        conditionIcon = "⛈️";
+      } else if (currentPrecip > 4 || wcode >= 65 || wcode >= 82) {
+        conditionTitle = "Heavy Rain Shower";
+        conditionIcon = "🌧️";
+      } else if (currentPrecip > 1 || wcode >= 63 || wcode >= 81) {
+        conditionTitle = "Moderate Rain";
+        conditionIcon = "🌧️";
+      } else {
+        conditionTitle = "Light Drizzle";
+        conditionIcon = "🌦️";
+      }
+    } else {
+      if (wcode >= 95) {
+        conditionTitle = "Thunderstorm in Vicinity (Dry Overhead)";
+        conditionIcon = "⛅";
+      } else if (wcode >= 80) {
+        conditionTitle = "Passing Rain Clouds (Dry Now)";
+        conditionIcon = "⛅";
+      } else if (wcode >= 1 && wcode <= 3) {
+        conditionTitle = "Partly Cloudy";
+        conditionIcon = "⛅";
+      } else {
+        conditionTitle = "Clear Sky / Dry";
+        conditionIcon = "☀️";
+      }
     }
 
     const payload = {
@@ -1450,12 +1455,12 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
       skyIcon: conditionIcon,
       stopMinutes: stopMins,
       rainProfile: minutelyPrecip.length >= 12 
-        ? minutelyPrecip.map((p, i) => i === 0 ? Math.max(p, currentPrecip) : p) 
-        : [currentPrecip, currentPrecip * 0.8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ? minutelyPrecip.slice(0, 12) 
+        : [currentPrecip, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       windSpeed: Math.round(wind),
-      puddleRisk: currentPrecip > 4 ? "High (4-6 cm)" : currentPrecip > 1 ? "Moderate (2-3 cm)" : "Low (< 1 cm)",
+      puddleRisk: currentPrecip > 4 ? "High (4-6 cm)" : currentPrecip > 1 ? "Moderate (2-3 cm)" : "Dry (< 1 cm)",
       rainIntensity: currentPrecip > 5 ? 'heavy' : currentPrecip > 0.3 ? 'light' : 'dry_now',
-      lightning: wcode >= 95 || currentPrecip > 8,
+      lightning: (wcode >= 95 && isRainingNow) || currentPrecip > 8,
       adviceHeadline: stopMins > 0 ? `Rain easing in ~${stopMins} mins (Wait 1 Chai)` : `100% Clear Skies at ${placeName.split(',')[0]}`,
       adviceDesc: stopMins > 0 
         ? `Live Doppler nowcast detects active precipitation (${currentPrecip.toFixed(1)} mm/h). Stepping out now without gear will soak clothes. Rain clears in ~${stopMins} mins.` 
@@ -1911,6 +1916,24 @@ function setupEventListeners() {
       appState.currentScenarioData = SCENARIOS.live;
       updateUI();
       showToast("🌧️ <strong>Live Rain Confirmed!</strong> Nowcast calibrated to active rain cell.", 4000);
+    });
+  }
+
+  // Ground truth dry button
+  const btnReportDry = document.getElementById('btnReportDry');
+  if (btnReportDry) {
+    btnReportDry.addEventListener('click', () => {
+      SCENARIOS.live.skyTitle = "Clear Sky (Ground Confirmed)";
+      SCENARIOS.live.skyIcon = "☀️";
+      SCENARIOS.live.stopMinutes = 0;
+      SCENARIOS.live.rainIntensity = 'dry_now';
+      SCENARIOS.live.rainProfile = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+      SCENARIOS.live.adviceHeadline = "100% Bone Dry Outdoors";
+      SCENARIOS.live.adviceDesc = "User confirmed zero precipitation overhead. Safe to step out in fresh white sneakers.";
+      SCENARIOS.live.puddleRisk = "Dry (< 1 cm)";
+      appState.currentScenarioData = SCENARIOS.live;
+      updateUI();
+      showToast("☀️ <strong>Ground Truth Confirmed!</strong> Nowcast set to 100% dry (Tier 0).", 4000);
     });
   }
 
