@@ -1703,7 +1703,7 @@ function renderRouteRibbon() {
     const rainEl = document.createElement('span');
     rainEl.className = `cp-rain ${cp.rain}`;
     rainEl.textContent = cp.text;
-    node.append(badge, nameEl, rainEl);
+    [badge, nameEl, rainEl].forEach(child => node.appendChild(child));
     trackEl.appendChild(node);
   });
 
@@ -1855,8 +1855,10 @@ function setupPhotonAutocomplete(inputId, dropdownId, clearBtnId, stateKey) {
     const subEl = document.createElement('div');
     subEl.className = 'auto-subtitle';
     subEl.textContent = sub;
-    textWrap.append(titleEl, subEl);
-    row.append(iconEl, textWrap);
+    textWrap.appendChild(titleEl);
+    textWrap.appendChild(subEl);
+    row.appendChild(iconEl);
+    row.appendChild(textWrap);
     row.addEventListener('click', () => {
       input.value = title;
       appState[stateKey] = title;
