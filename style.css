@@ -1708,6 +1708,28 @@ body.rain-theme {
   margin-top: 6px;
 }
 
+/* "Damp socks OK" tolerance toggle */
+.damp-ok-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.damp-ok-toggle input {
+  accent-color: var(--primary-cyan);
+  width: 16px;
+  height: 16px;
+}
+
+.app-footer a {
+  color: var(--primary-cyan);
+  text-decoration: none;
+}
+
 /* Compare Drawer */
 .compare-drawer {
   display: flex;

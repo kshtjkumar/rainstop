@@ -1,6 +1,7 @@
 /**
  * RainStop • Human Wetness & Commute Planner Engine
- * Real-time Precipitation Doppler Engine + Relatable Human Consequence Simulator
+ * Leave-time planner: multi-model + ensemble forecast (Open-Meteo), radar (RainViewer)
+ * + relatable human wetness simulator
  * Powered by Leaflet.js Interactive Road Map & Photon Live Global Autocomplete (No Key Required)
  */
 
@@ -39,9 +40,9 @@ const PLACES_DATABASE = [
 
 const SCENARIOS = {
   live: {
-    name: "Live Doppler Nowcast",
+    name: "Live Forecast",
     skyTitle: "Live Sky Status",
-    skySubtitle: "Connecting to local Doppler radar...",
+    skySubtitle: "Loading forecast models...",
     skyIcon: "🌤️",
     stopMinutes: 0,
     rainProfile: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -157,8 +158,12 @@ const appState = {
   destCoords: { lat: 26.5127, lon: 80.2349 },
   routeDistanceKm: 1.8,
   mapPinMode: 'origin', // 'origin' | 'dest'
-  weatherEngine: (typeof localStorage !== 'undefined' && localStorage.getItem('rainstop_weather_engine')) || 'openmeteo',
-  userOverrodeDry: false
+  weatherEngine: 'openmeteo',
+  groundReport: null,      // { type: 'rain'|'dry', at: ms } — expires after 30 min
+  forecastBundle: null,    // { lat, lon, a0, det, detAt, ens, ensAt } — see fetchForecastExtras
+  leavePlan: null,         // output of computeLeavePlan, recomputed on every updateUI
+  radar: null,             // { status: 'echo'|'none'|'unavailable'|'stale', frameTime, nearby }
+  dampOk: (() => { try { return localStorage.getItem('rainstop_damp_ok') === '1'; } catch (e) { return false; } })()
 };
 
 // ============================================================================
@@ -374,6 +379,10 @@ function initInteractiveMap() {
 
 async function fetchAndDrawRoute() {
   const o = appState.originCoords;
+  // Weather is fetched for the start point: refetch when it moved to a new spot.
+  if (appState.activeScenario === 'live' && appState.forecastBundle && !sameSpot(appState.forecastBundle, o)) {
+    fetchLiveOpenMeteo(o.lat, o.lon, appState.origin || 'Start point');
+  }
   const d = appState.destCoords;
   const mode = appState.transportMode === 'car' ? 'car' : appState.transportMode === 'scooter' ? 'bike' : 'foot';
 
@@ -464,21 +473,13 @@ async function reverseGeocode(lat, lon, stateKey) {
 // 4. HUMAN WETNESS ENGINE (PHYSICS & RELATABILITY)
 // ============================================================================
 
-function calculateWetnessAndConsequences() {
-  const data = appState.currentScenarioData;
-  const delay = appState.departureDelayMins;
-  
-  const bucketIdx = Math.min(Math.floor(delay / 5), data.rainProfile.length - 1);
-  const rainRateAtDeparture = data.rainProfile[bucketIdx] || 0;
-
-  let speedKmH = 4.5;
-  if (appState.transportMode === 'walk') speedKmH = 4.5;
-  else if (appState.transportMode === 'scooter') speedKmH = 25.0;
-  else if (appState.transportMode === 'car') speedKmH = 18.0;
-
-  const tripDurationMins = Math.max(2, Math.round((appState.routeDistanceKm / speedKmH) * 60));
-
-  const isHighWind = data.windSpeed > 30;
+// Pure wetness model: rain rate (mm/h) + mode + gear -> tier & body zones.
+// Shared by the avatar and the leave-time engine so the two can never disagree.
+function computeWetness(rainRateAtDeparture, opts) {
+  const mode = opts.mode;
+  const gear = opts.gear;
+  const isHighWind = opts.windSpeed > 30;
+  const puddleHigh = !!opts.puddleHigh;
 
   const bodyStatus = {
     head: 'dry',
@@ -494,16 +495,16 @@ function calculateWetnessAndConsequences() {
     bodyStatus.backpack = 'dry';
     bodyStatus.legs = 'dry';
     bodyStatus.shoes = 'dry';
-  } else if (appState.transportMode === 'car') {
+  } else if (mode === 'car') {
     // 100% Enclosed Automobile Cabin: fully shielded from rain & road spray
     bodyStatus.head = 'dry';
     bodyStatus.torso = 'dry';
     bodyStatus.backpack = 'dry';
     bodyStatus.legs = 'dry';
     bodyStatus.shoes = 'dry';
-  } else if (appState.transportMode === 'scooter') {
+  } else if (mode === 'scooter') {
     // 2-Wheeler Transit: Umbrellas impossible, driving at 25 km/h into rain
-    if (appState.gear.raincoat) {
+    if (gear.raincoat) {
       bodyStatus.head = 'dry';
       bodyStatus.torso = 'dry';
       bodyStatus.legs = 'dry';
@@ -512,37 +513,37 @@ function calculateWetnessAndConsequences() {
       bodyStatus.torso = rainRateAtDeparture > 1 ? 'soaked' : 'damp';
       bodyStatus.legs = 'soaked';
     }
-    bodyStatus.backpack = (appState.gear.bagCover || appState.gear.raincoat) ? 'dry' : (rainRateAtDeparture > 2 ? 'soaked' : 'damp');
-    bodyStatus.shoes = appState.gear.shoeCovers ? 'dry' : 'soaked';
+    bodyStatus.backpack = (gear.bagCover || gear.raincoat) ? 'dry' : (rainRateAtDeparture > 2 ? 'soaked' : 'damp');
+    bodyStatus.shoes = gear.shoeCovers ? 'dry' : 'soaked';
   } else {
     // Pedestrian Walking Mode
     // Head:
-    if (appState.gear.raincoat) {
+    if (gear.raincoat) {
       bodyStatus.head = 'dry';
-    } else if (appState.gear.umbrella) {
+    } else if (gear.umbrella) {
       bodyStatus.head = isHighWind ? 'damp' : 'dry';
     } else {
       bodyStatus.head = rainRateAtDeparture > 3 ? 'soaked' : 'damp';
     }
 
     // Torso:
-    if (appState.gear.raincoat) {
+    if (gear.raincoat) {
       bodyStatus.torso = 'dry';
-    } else if (appState.gear.umbrella) {
+    } else if (gear.umbrella) {
       bodyStatus.torso = (isHighWind && rainRateAtDeparture > 4) ? 'damp' : 'dry';
     } else {
       bodyStatus.torso = rainRateAtDeparture > 2 ? 'soaked' : 'damp';
     }
 
     // Backpack:
-    if (appState.gear.bagCover || appState.gear.raincoat) {
+    if (gear.bagCover || gear.raincoat) {
       bodyStatus.backpack = 'dry';
     } else {
       bodyStatus.backpack = rainRateAtDeparture > 3 ? 'soaked' : 'damp';
     }
 
     // Legs:
-    if (appState.gear.raincoat) {
+    if (gear.raincoat) {
       bodyStatus.legs = rainRateAtDeparture > 8 ? 'damp' : 'dry';
     } else {
       if (rainRateAtDeparture > 5) {
@@ -555,10 +556,10 @@ function calculateWetnessAndConsequences() {
     }
 
     // Shoes:
-    if (appState.gear.shoeCovers) {
+    if (gear.shoeCovers) {
       bodyStatus.shoes = 'dry';
     } else {
-      if (rainRateAtDeparture > 3 || (rainRateAtDeparture > 0 && data.puddleRisk && data.puddleRisk.includes('High'))) {
+      if (rainRateAtDeparture > 3 || (rainRateAtDeparture > 0 && puddleHigh)) {
         bodyStatus.shoes = 'soaked';
       } else if (rainRateAtDeparture > 0.5) {
         bodyStatus.shoes = 'damp';
@@ -608,61 +609,560 @@ function calculateWetnessAndConsequences() {
     tierHeadline,
     tierSubtext,
     badgeColor,
-    bodyStatus,
-    rainRateAtDeparture,
-    tripDurationMins
+    bodyStatus
+  };
+}
+
+function calculateWetnessAndConsequences() {
+  const data = appState.currentScenarioData;
+  const delay = appState.departureDelayMins;
+  const tripDurationMins = tripMinutes(appState.routeDistanceKm, appState.transportMode);
+
+  // Rain expected during the trip if leaving after `delay` minutes: from the leave plan
+  // (peak over the trip window) when available, else the 60-min profile bucket.
+  let rainRateAtDeparture = planExpectedRate(appState.leavePlan, delay);
+  if (rainRateAtDeparture === null) {
+    const bucketIdx = Math.min(Math.floor(delay / 5), data.rainProfile.length - 1);
+    rainRateAtDeparture = data.rainProfile[bucketIdx] || 0;
+  }
+
+  const result = computeWetness(rainRateAtDeparture, {
+    mode: appState.transportMode,
+    gear: appState.gear,
+    windSpeed: data.windSpeed,
+    puddleHigh: rainRateAtDeparture > 0 && !!data.puddleRisk && data.puddleRisk.includes('High')
+  });
+  result.rainRateAtDeparture = rainRateAtDeparture;
+  result.tripDurationMins = tripDurationMins;
+  return result;
+}
+
+// ============================================================================
+// 4.2 LEAVE-TIME ENGINE ("When can I leave and arrive dry enough?")
+// ============================================================================
+// For every candidate departure (every 5 min over the next 6 h) we check the rain over
+// the WHOLE trip window [departure, departure + trip duration] in every forecast model
+// and ensemble member, and estimate the probability the trip stays within what the
+// user's mode + gear can tolerate.
+//
+// Series shape (absolute unix seconds, so it is timezone-proof and ages correctly):
+//   { group: 'det'|'ens', system: string, stepSec: number, endTimes: number[], rates: (number|null)[] }
+// A value at end time T is the mean rate (mm/h) over (T - stepSec, T].
+
+const LEAVE_STEP_MIN = 5;
+const LEAVE_HORIZON_MIN = 360;
+const GOOD_P = 0.8;
+const FAIR_P = 0.6;
+const MIN_WAIT_GAIN = 0.15;    // waiting must improve the chance by >= 15 points to be worth it
+const ENS_PEAK_FACTOR = 1.5;   // an hourly mean of 0.3 mm/h can hide a short heavier burst
+const MODE_SPEED_KMH = { walk: 4.5, scooter: 25.0, car: 18.0 };
+const ACCEPT_TIER_STRICT = 1;  // bone dry or light sprinkle
+const ACCEPT_TIER_RELAXED = 2; // damp socks / jeans OK
+const GROUND_REPORT_TTL_MS = 30 * 60000;
+
+function tripMinutes(distKm, mode) {
+  return Math.max(2, Math.round((distKm / (MODE_SPEED_KMH[mode] || 4.5)) * 60));
+}
+
+// Largest rain rate (mm/h) the wetness model keeps at or below `acceptTier` for this
+// mode + gear. 0 = only fully dry slots are OK; Infinity = rain never matters (car).
+function toleranceRateFor(mode, gear, windSpeed, acceptTier) {
+  let tol = 0;
+  for (let i = 1; i <= 200; i++) {
+    const r = i / 10;
+    if (computeWetness(r, { mode, gear, windSpeed, puddleHigh: r > 4 }).tier > acceptTier) return tol;
+    tol = r;
+  }
+  return Infinity;
+}
+
+function rateAt(series, tSec) {
+  const { endTimes, rates, stepSec } = series;
+  let lo = 0, hi = endTimes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (endTimes[mid] < tSec) lo = mid + 1; else hi = mid;
+  }
+  if (lo >= endTimes.length || endTimes[lo] - stepSec >= tSec) return null;
+  const v = rates[lo];
+  return (v === null || v === undefined || !Number.isFinite(v)) ? null : v;
+}
+
+function median(arr) {
+  if (!arr.length) return null;
+  const a = [...arr].sort((x, y) => x - y);
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+function computeLeavePlan(seriesList, opts) {
+  const { nowSec, tripMin, tol } = opts;
+  const obs = opts.obs || {};
+  if (!seriesList || !seriesList.length) return null;
+
+  const nB = Math.max(1, Math.ceil(tripMin / LEAVE_STEP_MIN));
+  const nCand = LEAVE_HORIZON_MIN / LEAVE_STEP_MIN;
+  const nBuckets = nCand + nB;
+  const sm = (ok, n) => (ok + 0.25) / (n + 0.5);
+
+  // Pre-sample every series at 5-min bucket midpoints (piecewise constant, no smearing).
+  const sample = (s) => {
+    const out = new Array(nBuckets);
+    for (let b = 0; b < nBuckets; b++) out[b] = rateAt(s, nowSec + b * 300 + 150);
+    return out;
+  };
+  const det = seriesList.filter(s => s.group === 'det').map(s => ({ s, r: sample(s) }));
+  const ensBySystem = {};
+  seriesList.filter(s => s.group === 'ens').forEach(s => {
+    (ensBySystem[s.system] = ensBySystem[s.system] || []).push({ s, r: sample(s) });
+  });
+  const ensSystems = Object.keys(ensBySystem);
+
+  // Peak rate over the trip window, or null if any bucket is missing. A member with a
+  // gap in the window is excluded (whether wet or dry) so gaps can't bias the result.
+  const peak = (r, k) => {
+    let p = 0;
+    for (let b = k; b < k + nB; b++) { if (r[b] === null) return null; p = Math.max(p, r[b]); }
+    return p;
+  };
+  // true = trip OK, false = too wet, null = excluded (data gap)
+  const memberOK = (pk, isEns) => {
+    if (pk === null) return null;
+    return ((isEns && tol > 0) ? pk * ENS_PEAK_FACTOR : pk) <= tol;
+  };
+  const percentile = (arr, q) => {
+    const a = [...arr].sort((x, y) => x - y);
+    return a[Math.min(a.length - 1, Math.floor(q * a.length))];
+  };
+
+  const candidates = [];
+  for (let k = 0; k < nCand; k++) {
+    let okD = 0, nD = 0;
+    const peaks = [];
+    det.forEach(({ r }) => {
+      const pk = peak(r, k);
+      const st = memberOK(pk, false);
+      if (st === null) return;
+      nD++; if (st) okD++;
+      peaks.push(pk);
+    });
+    const sysProbs = [];
+    ensSystems.forEach(sys => {
+      let ok = 0, n = 0;
+      ensBySystem[sys].forEach(({ r }) => {
+        const pk = peak(r, k);
+        const st = memberOK(pk, true);
+        if (st === null) return;
+        n++; if (st) ok++;
+        peaks.push(tol > 0 ? pk * ENS_PEAK_FACTOR : pk);
+      });
+      if (n) sysProbs.push(sm(ok, n));
+    });
+    const pDet = nD ? sm(okD, nD) : null;
+    const pEns = sysProbs.length ? sysProbs.reduce((a, b) => a + b, 0) / sysProbs.length : null;
+    if (pDet === null && pEns === null) break; // end of usable forecast horizon
+
+    let pOk = (pDet !== null && pEns !== null) ? 0.5 * pDet + 0.5 * pEns : (pDet !== null ? pDet : pEns);
+
+    // Observations only matter near "now" and decay with time.
+    // Influence decays from the time of the observation, not from "now".
+    const tMin = k * LEAVE_STEP_MIN;
+    const sinceObs = (obs.ageMin || 0) + tMin;
+    let obsRainWeight = 0;
+    if (obs.rainTau) {
+      const exceed = tol === 0 ? 0.95 : tol < 1 ? 0.8 : tol < 2.5 ? 0.55 : tol < 7.6 ? 0.3 : 0.1;
+      obsRainWeight = Math.exp(-sinceObs / obs.rainTau);
+      pOk = Math.min(pOk, 1 - exceed * obsRainWeight);
+    } else if (obs.dry) {
+      pOk = Math.max(pOk, 0.9 * Math.exp(-(sinceObs + tripMin / 2) / 20));
+    }
+    pOk = Math.min(0.97, Math.max(0.03, pOk));
+
+    // "Rain if it rains as forecast": 75th percentile of all member peaks (ensemble scaled
+    // like in the OK test), at least light rain while an observation says it's raining.
+    let expRate = peaks.length ? percentile(peaks, 0.75) : 0;
+    if (obsRainWeight > 0.5) expRate = Math.max(expRate, 1.0);
+    candidates.push({ offsetMin: tMin, pOk, pDet, pEns, expRate: +expRate.toFixed(1) });
+  }
+  if (!candidates.length) return null;
+
+  const firstGood = candidates.find(c => c.pOk >= GOOD_P) || null;
+  let best = candidates[0];
+  candidates.forEach(c => { if (c.pOk > best.pOk + 0.02) best = c; });
+
+  const windows = [];
+  let run = null;
+  candidates.forEach(c => {
+    if (c.pOk >= GOOD_P) {
+      if (!run) run = { startMin: c.offsetMin, endMin: c.offsetMin + LEAVE_STEP_MIN, minP: c.pOk };
+      else { run.endMin = c.offsetMin + LEAVE_STEP_MIN; run.minP = Math.min(run.minP, c.pOk); }
+    } else if (run) { windows.push(run); run = null; }
+  });
+  if (run) windows.push(run);
+
+  // Recommendation: wait for a good window only if it is close or clearly better;
+  // a "fair" chance now beats waiting hours for a few extra points.
+  const nowC = candidates[0];
+  let recommended;
+  if (nowC.pOk >= GOOD_P) recommended = { offsetMin: 0, pOk: nowC.pOk, kind: 'now' };
+  else if (firstGood && (firstGood.offsetMin <= 30 || firstGood.pOk - nowC.pOk >= MIN_WAIT_GAIN)) {
+    recommended = { offsetMin: firstGood.offsetMin, pOk: firstGood.pOk, kind: 'wait' };
+  } else if (nowC.pOk >= FAIR_P) recommended = { offsetMin: 0, pOk: nowC.pOk, kind: 'now-fair' };
+  else if (firstGood) recommended = { offsetMin: firstGood.offsetMin, pOk: firstGood.pOk, kind: 'wait' };
+  else if (best.pOk - nowC.pOk >= MIN_WAIT_GAIN) recommended = { offsetMin: best.offsetMin, pOk: best.pOk, kind: 'best-bet' };
+  else recommended = { offsetMin: 0, pOk: nowC.pOk, kind: 'no-better' };
+
+  const chosen = candidates[recommended.offsetMin / LEAVE_STEP_MIN];
+  const levels = ['Low', 'Fair', 'Good', 'High'];
+  let lvl = chosen.pOk >= 0.9 ? 3 : chosen.pOk >= GOOD_P ? 2 : chosen.pOk >= FAIR_P ? 1 : 0;
+  const notes = [];
+  if (chosen.pDet !== null && chosen.pEns !== null && Math.abs(chosen.pDet - chosen.pEns) > 0.4) {
+    notes.push('models disagree'); lvl = Math.max(0, lvl - 1);
+  }
+  if (!ensSystems.length && det.length <= 1) { notes.push('single model'); lvl = Math.min(lvl, 0); }
+  else if (!ensSystems.length) notes.push('no ensemble');
+  else if (!det.length) notes.push('hourly resolution');
+  if (obs.rainTau) notes.push(obs.source === 'radar' ? 'rain on radar now' : 'rain reported now');
+  if (obs.dry) notes.push('dry reported now');
+  if (opts.dataAgeMin > 30) {
+    notes.push(`forecast data ${Math.round(opts.dataAgeMin)} min old`);
+    lvl = opts.dataAgeMin > 90 ? 0 : Math.max(0, lvl - 1);
+  }
+
+  return {
+    nowSec, tripMin, tol,
+    sources: { det: det.length, ens: ensSystems.reduce((a, s) => a + ensBySystem[s].length, 0), ensSystems: ensSystems.length },
+    candidates,
+    leaveNowOk: candidates[0].pOk >= GOOD_P,
+    earliestGood: firstGood ? { offsetMin: firstGood.offsetMin, pOk: firstGood.pOk } : null,
+    best: { offsetMin: best.offsetMin, pOk: best.pOk },
+    recommended,
+    windows: windows.slice(0, 3),
+    confidence: levels[lvl],
+    notes,
+    horizonMin: candidates.length * LEAVE_STEP_MIN,
+    beyondHorizon: !firstGood
+  };
+}
+
+function planCandidateAt(plan, delayMin) {
+  if (!plan || !plan.candidates.length) return null;
+  const k = Math.min(plan.candidates.length - 1, Math.max(0, Math.round(delayMin / LEAVE_STEP_MIN)));
+  return plan.candidates[k];
+}
+
+function planExpectedRate(plan, delayMin) {
+  const c = planCandidateAt(plan, delayMin);
+  return c ? c.expRate : null;
+}
+
+// Lab simulations: 12 x 5-min profile, dry afterwards.
+function seriesFromScenario(data, nowSec) {
+  const start = nowSec - (nowSec % 300);
+  const endTimes = [], rates = [];
+  for (let i = 0; i < (LEAVE_HORIZON_MIN + 300) / 5; i++) {
+    endTimes.push(start + (i + 1) * 300);
+    rates.push(i < data.rainProfile.length ? data.rainProfile[i] : 0);
+  }
+  return { group: 'det', system: 'scenario', stepSec: 300, endTimes, rates };
+}
+
+function activeGroundReport() {
+  const r = appState.groundReport;
+  if (!r) return null;
+  if (Date.now() - r.at > GROUND_REPORT_TTL_MS) { appState.groundReport = null; return null; }
+  return r;
+}
+
+function buildSeriesSet(nowSec) {
+  if (appState.activeScenario !== 'live') return [seriesFromScenario(appState.currentScenarioData, nowSec)];
+  const bundle = appState.forecastBundle;
+  if (!bundle) return [];
+  const now = Date.now();
+  const list = [];
+  const detFresh = bundle.det && bundle.det.length && now - bundle.detAt < DET_MAX_AGE_MS;
+  if (detFresh) list.push(...bundle.det);
+  else if (bundle.a0 && now - (bundle.a0At || 0) < DET_MAX_AGE_MS) list.push(bundle.a0);
+  if (bundle.ens && bundle.ens.length && now - bundle.ensAt < ENS_MAX_AGE_MS) list.push(...bundle.ens);
+  return list;
+}
+
+// Age (min) of the freshest deterministic forecast in use (live only).
+function forecastDataAgeMin() {
+  const b = appState.forecastBundle;
+  if (appState.activeScenario !== 'live' || !b) return 0;
+  const newest = Math.max(b.detAt || 0, b.a0At || 0);
+  return newest ? (Date.now() - newest) / 60000 : 0;
+}
+
+function computeLeavePlanForState(gearOverride) {
+  const gear = gearOverride || appState.gear;
+  const nowSec = Date.now() / 1000;
+  const tripMin = tripMinutes(appState.routeDistanceKm, appState.transportMode);
+  const acceptTier = appState.dampOk ? ACCEPT_TIER_RELAXED : ACCEPT_TIER_STRICT;
+  const windSpeed = (appState.currentScenarioData && appState.currentScenarioData.windSpeed) || 0;
+  const tol = toleranceRateFor(appState.transportMode, gear, windSpeed, acceptTier);
+
+  const obs = {};
+  if (appState.activeScenario === 'live') {
+    const report = activeGroundReport();
+    const reportAge = report ? (Date.now() - report.at) / 60000 : 0;
+    if (report && report.type === 'rain') { obs.rainTau = 25; obs.source = 'report'; obs.ageMin = reportAge; }
+    else if (report && report.type === 'dry') { obs.dry = true; obs.ageMin = reportAge; }
+    else if (appState.radar && appState.radar.status === 'echo' && appState.radar.frameTime) {
+      obs.rainTau = 20; obs.source = 'radar'; obs.ageMin = Math.max(0, (nowSec - appState.radar.frameTime) / 60);
+    }
+  }
+  return computeLeavePlan(buildSeriesSet(nowSec), { nowSec, tripMin, tol, obs, dataAgeMin: forecastDataAgeMin() });
+}
+
+function fmtClock(date) {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtPct(p) {
+  return `${Math.round(p * 100)}%`;
+}
+
+// ============================================================================
+// 4.3 LEAVE PLAN -> UI HELPERS
+// ============================================================================
+
+function setSpans(el, texts) {
+  if (!el) return;
+  el.textContent = '';
+  texts.forEach(t => {
+    const span = document.createElement('span');
+    span.textContent = t;
+    el.appendChild(span);
+  });
+}
+
+function tripVerb() {
+  return appState.transportMode === 'car' ? 'drive' : appState.transportMode === 'scooter' ? 'ride' : 'walk';
+}
+
+function planTarget(plan) {
+  return plan.recommended;
+}
+
+// Suggested departure offset (min): leave plan if available, else when rain stops.
+function bestDepartureMins() {
+  if (appState.leavePlan) return planTarget(appState.leavePlan).offsetMin;
+  const d = appState.currentScenarioData;
+  return d && d.stopMinutes ? d.stopMinutes : 0;
+}
+
+function clockIn(mins) {
+  return fmtClock(new Date(Date.now() + mins * 60000));
+}
+
+function tierAtOffset(plan, offsetMin) {
+  const c = planCandidateAt(plan, offsetMin);
+  const data = appState.currentScenarioData;
+  const rate = c ? c.expRate : 0;
+  return computeWetness(rate, {
+    mode: appState.transportMode, gear: appState.gear, windSpeed: data.windSpeed,
+    puddleHigh: rate > 4
+  }).tier;
+}
+
+// Median rain rate across models at an absolute time (for the along-route ribbon).
+function medianRateAt(tSec) {
+  const list = buildSeriesSet(Date.now() / 1000);
+  const det = list.filter(s => s.group === 'det');
+  const pool = det.length ? det : list;
+  const vals = pool.map(s => rateAt(s, tSec)).filter(v => v !== null);
+  return vals.length ? median(vals) : null;
+}
+
+// Would extra gear open a window? Shown only when there is no good window as-is.
+function gearUpgradeHint(plan) {
+  if (!plan || plan.earliestGood || appState.transportMode === 'car') return '';
+  const g = appState.gear;
+  if (g.raincoat && g.shoeCovers) return ' A cab is the only reliably dry option.';
+  const alt = computeLeavePlanForState({ ...g, raincoat: true, umbrella: false, shoeCovers: true });
+  if (alt && alt.earliestGood) {
+    const when = alt.earliestGood.offsetMin === 0 ? 'now' : `at ~${clockIn(alt.earliestGood.offsetMin)}`;
+    return ` With raincoat + boots you could leave ${when} (${fmtPct(alt.earliestGood.pOk)}).`;
+  }
+  return ' Even with raincoat + boots it stays wet — consider a cab.';
+}
+
+// Live "now" view from the same model set the leave plan uses, so the sky banner, the
+// 60-min chart and the rain canvas can't contradict the plan. null = keep scenario data.
+function liveNowView() {
+  if (appState.activeScenario !== 'live' || activeGroundReport()) return null;
+  const nowSec = Date.now() / 1000;
+  const det = buildSeriesSet(nowSec).filter(s => s.group === 'det');
+  if (appState.radar && appState.radar.status === 'echo') {
+    return { title: "Rain on Radar at Your Location", icon: "🌧️", det, minIntensity: 'light' };
+  }
+  if (det.length < 2) return null;
+  const nowRates = det.map(s => rateAt(s, nowSec + 60)).filter(v => v !== null);
+  if (!nowRates.length) return null;
+  const wet = nowRates.filter(v => v > 0).length;
+  const med = median(nowRates);
+  if (wet === 0) return { title: "No Rain Forecast Right Now", icon: "⛅", det };
+  if (wet === nowRates.length) {
+    return { title: med > 7.6 ? "Heavy Rain" : med > 2.5 ? "Moderate Rain" : "Light Rain / Drizzle", icon: med > 7.6 ? "⛈️" : "🌧️", det };
+  }
+  return { title: `Models Split: ${wet} of ${nowRates.length} Show Rain Now`, icon: "🌦️", det };
+}
+
+function renderLeaveCountdown(plan) {
+  const caption = document.querySelector('.countdown-caption');
+  const timerUnit = document.querySelector('.timer-unit');
+  const timelineLabels = document.querySelector('.timeline-labels');
+  const timelineBar = document.getElementById('timelineBar');
+  const rec = plan.recommended;
+  const nowP = plan.candidates[0].pOk;
+  const trip = `${plan.tripMin}-min ${tripVerb()}`;
+  const notes = plan.notes.length ? ` • ${plan.notes.join(', ')}` : '';
+  const conf = `(${plan.confidence} confidence${notes})`;
+  const clockEl = document.getElementById('stopClockTime');
+
+  if (caption) caption.textContent = "WHEN CAN I LEAVE?";
+  if (rec.offsetMin === 0) {
+    document.getElementById('stopMinutes').textContent = "NOW";
+    if (timerUnit) timerUnit.textContent = rec.kind === 'now' ? "GOOD TO GO" : rec.kind === 'now-fair' ? "FAIR CHANCE" : "NO BETTER LATER";
+  } else {
+    document.getElementById('stopMinutes').textContent = rec.offsetMin;
+    if (timerUnit) timerUnit.textContent = rec.kind === 'wait' ? "MIN WAIT" : "MIN (BEST BET)";
+  }
+
+  if (rec.kind === 'now' || rec.kind === 'wait') {
+    clockEl.textContent = `Leave ${rec.offsetMin === 0 ? 'now' : `~${clockIn(rec.offsetMin)}`} • ${fmtPct(rec.pOk)} chance your ${trip} stays dry enough ${conf}`;
+  } else if (rec.kind === 'now-fair') {
+    const later = plan.earliestGood
+      ? ` Waiting until ${clockIn(plan.earliestGood.offsetMin)} only reaches ${fmtPct(plan.earliestGood.pOk)}.`
+      : '';
+    clockEl.textContent = `Leave now • ${fmtPct(nowP)} chance your ${trip} stays dry enough.${later} ${conf}`;
+  } else if (rec.kind === 'best-bet') {
+    clockEl.textContent = `No reliably dry window in next ${Math.round(plan.horizonMin / 60)} h — best bet ${clockIn(rec.offsetMin)} (${fmtPct(rec.pOk)}, now ${fmtPct(nowP)}) ${conf}`;
+  } else {
+    clockEl.textContent = `Rain likely for the next ${Math.round(plan.horizonMin / 60)} h — waiting won't help (${fmtPct(nowP)} now) ${conf}`;
+  }
+
+  if (timelineBar) {
+    const n = plan.candidates.length;
+    const stops = plan.candidates.map((c, i) => {
+      const col = c.pOk >= GOOD_P ? '#10b981' : c.pOk >= FAIR_P ? '#f59e0b' : '#ef4444';
+      return `${col} ${(i / Math.max(1, n - 1) * 100).toFixed(1)}%`;
+    });
+    timelineBar.style.width = "100%";
+    timelineBar.style.background = n > 1 ? `linear-gradient(90deg, ${stops.join(', ')})` : stops[0].split(' ')[0];
+    timelineBar.title = `Chance of a dry-enough trip by departure time (next ${Math.round(plan.horizonMin / 60)} h): green ≥80%, amber ≥60%, red below`;
+  }
+  if (timelineLabels) {
+    const labels = plan.windows.length
+      ? plan.windows.map(w => `✅ ${clockIn(w.startMin)}–${clockIn(w.endMin)}`)
+      : [`Now ${fmtPct(nowP)}`, `Best ${clockIn(plan.best.offsetMin)} ${fmtPct(plan.best.pOk)}`, `+${Math.round(plan.horizonMin / 60)}h`];
+    setSpans(timelineLabels, labels);
+  }
+}
+
+function describeLeavePlan(plan) {
+  const nowP = plan.candidates[0].pOk;
+  const rec = plan.recommended;
+  const trip = `${plan.tripMin}-min ${tripVerb()}`;
+  const live = appState.activeScenario === 'live';
+  const radarLine = live && appState.radar && appState.radar.status === 'echo'
+    ? ' Radar shows rain at your location right now.'
+    : live && appState.radar && appState.radar.nearby ? ' Rain cells within ~13 km on radar.' : '';
+
+  if (rec.kind === 'now') {
+    const w = plan.windows[0];
+    const until = w && w.startMin === 0 && w.endMin < plan.horizonMin ? ` Good window lasts until ~${clockIn(w.endMin)}.` : '';
+    return { headline: "Good time to leave now", desc: `${fmtPct(nowP)} chance your ${trip} stays dry enough.${until}${radarLine}` };
+  }
+  if (rec.kind === 'wait') {
+    return {
+      headline: `Wait ${rec.offsetMin} min — leave ~${clockIn(rec.offsetMin)}`,
+      desc: `Leaving now: ${fmtPct(nowP)} chance of staying dry enough. At ${clockIn(rec.offsetMin)}: ${fmtPct(rec.pOk)}.${radarLine}`
+    };
+  }
+  if (rec.kind === 'now-fair') {
+    const later = plan.earliestGood ? ` Waiting until ${clockIn(plan.earliestGood.offsetMin)} only gets you to ${fmtPct(plan.earliestGood.pOk)}.` : '';
+    return {
+      headline: "Leave now — waiting barely helps",
+      desc: `${fmtPct(nowP)} chance your ${trip} stays dry enough (some models show light rain).${later} Carry an umbrella just in case.${radarLine}`
+    };
+  }
+  if (rec.kind === 'best-bet') {
+    return {
+      headline: `No reliably dry window — best bet ~${clockIn(rec.offsetMin)}`,
+      desc: `Now ${fmtPct(nowP)}, at ${clockIn(rec.offsetMin)} ${fmtPct(rec.pOk)}.${gearUpgradeHint(plan)}${radarLine}`
+    };
+  }
+  return {
+    headline: "Rain likely for hours — waiting won't help",
+    desc: `${fmtPct(nowP)} chance of staying dry enough now, and it doesn't improve later.${gearUpgradeHint(plan)}${radarLine}`
   };
 }
 
 // ============================================================================
-// 4.5 GOOGLE DEEPMIND WEATHERNEXT 3 HORIZON RENDERER
+// 4.5 NEXT-3-HOURS HORIZON RENDERER
 // ============================================================================
 
+// Next-3-hours strip (keeps its historical name/ids). With ensemble data it shows the
+// chance of rain per hour across all ensemble runs; otherwise the single-model hourly value.
 function renderWeatherNext3(data) {
   const strip = document.getElementById('weatherNext3Strip');
   if (!strip) return;
 
-  const hourlyPrecip = (data && Array.isArray(data.hourlyPrecip)) ? data.hourlyPrecip : [0.1, 0.0, 0.0];
-  const hourlyWcode = (data && Array.isArray(data.hourlyWcode)) ? data.hourlyWcode : [3, 1, 0];
-  const hourlyTemp = (data && Array.isArray(data.hourlyTemp)) ? data.hourlyTemp : [27, 26, 25];
+  const hourlyPrecip = (data && Array.isArray(data.hourlyPrecip)) ? data.hourlyPrecip : [0, 0, 0];
+  const hourlyTemp = (data && Array.isArray(data.hourlyTemp)) ? data.hourlyTemp : [];
+  const bundle = appState.forecastBundle;
+  const ens = appState.activeScenario === 'live' && bundle && bundle.ens && bundle.ens.length ? bundle.ens : null;
+  const badge = document.getElementById('wn3Badge');
+  if (badge) badge.textContent = ens ? `${ens.length}-run ensemble` : (appState.activeScenario === 'live' ? 'Single model' : 'Simulation');
 
-  const now = new Date();
-  strip.innerHTML = '';
+  const nowSec = Date.now() / 1000;
+  strip.textContent = '';
 
   for (let i = 0; i < 3; i++) {
-    const horizonHour = new Date(now.getTime() + (i + 1) * 3600000);
-    let hourStr = horizonHour.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    
+    const hourStr = `${fmtClock(new Date((nowSec + i * 3600) * 1000))}–${fmtClock(new Date((nowSec + (i + 1) * 3600) * 1000))}`;
+    let chance = null;
     let precip = hourlyPrecip[i] !== undefined ? hourlyPrecip[i] : 0;
-    const wcode = hourlyWcode[i] !== undefined ? hourlyWcode[i] : 0;
-    const temp = hourlyTemp[i] !== undefined ? Math.round(hourlyTemp[i]) : 26;
-
-    // In WeatherNext 3 AI mode, apply satellite neural calibration
-    if (appState.weatherEngine === 'weathernext3' && precip > 0) {
-      precip = Math.max(0, precip * 0.92); // DeepMind ensemble satellite dampening
+    if (ens) {
+      // value for the hour (t-1h, t] containing now + i h + 30 min
+      const tMid = nowSec + i * 3600 + 1800;
+      const bySys = {};
+      const vals = [];
+      ens.forEach(s => {
+        const v = rateAt(s, tMid);
+        if (v === null) return;
+        (bySys[s.system] = bySys[s.system] || []).push(v >= 0.1);
+        vals.push(v);
+      });
+      const systems = Object.values(bySys);
+      if (systems.length) {
+        chance = systems.reduce((acc, arr) => acc + arr.filter(Boolean).length / arr.length, 0) / systems.length;
+        precip = median(vals);
+      }
     }
 
-    let icon = "🌤️";
-    if (wcode >= 95) icon = "⛈️";
-    else if (wcode >= 80 || precip > 5) icon = "🌧️";
-    else if (wcode >= 60 || precip > 0.5) icon = "🌦️";
-    else if (wcode >= 51 || precip > 0.1) icon = "🌦️";
-    else if (wcode >= 1 && wcode <= 3) icon = "⛅";
-    else if (wcode === 0) icon = "☀️";
-
-    const isRain = precip > 0.1;
-    const precipLabel = isRain ? `${precip.toFixed(1)} mm/h` : '0 mm/h (Dry)';
-    const riskLabel = precip > 4 ? 'Tier 3 Soak' : precip > 1 ? 'Tier 2 Rain' : precip > 0.1 ? 'Tier 1 Spritz' : 'Bone Dry';
+    const wet = chance !== null ? chance >= 0.5 : precip > 0.1;
+    let icon = "☀️";
+    if (chance !== null) icon = chance >= 0.7 ? "🌧️" : chance >= 0.4 ? "🌦️" : chance >= 0.15 ? "⛅" : "☀️";
+    else icon = precip > 5 ? "🌧️" : precip > 0.1 ? "🌦️" : "☀️";
 
     const card = document.createElement('div');
     card.className = 'horizon-card';
-    card.innerHTML = `
-      <span class="hz-time">+${i + 1}h (${hourStr})</span>
-      <span class="hz-icon">${icon}</span>
-      <span class="hz-temp">${temp}°C</span>
-      <span class="hz-precip ${isRain ? 'wet' : 'dry'}">${precipLabel}</span>
-      <span class="hz-tier">${riskLabel}</span>
-    `;
+    const parts = [
+      ['hz-time', hourStr],
+      ['hz-icon', icon],
+      ['hz-temp', hourlyTemp[i] !== undefined ? `${Math.round(hourlyTemp[i])}°C` : ''],
+      [`hz-precip ${wet ? 'wet' : 'dry'}`, chance !== null ? `${fmtPct(chance)} rain chance` : (precip > 0.1 ? `${precip.toFixed(1)} mm/h` : '0 mm/h (Dry)')],
+      ['hz-tier', chance !== null ? `median ${precip.toFixed(1)} mm/h` : (precip > 4 ? 'Heavy' : precip > 1 ? 'Rain' : precip > 0.1 ? 'Drizzle' : 'Dry')]
+    ];
+    parts.forEach(([cls, text]) => {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = text;
+      card.appendChild(span);
+    });
     strip.appendChild(card);
   }
 }
@@ -680,12 +1180,24 @@ function formatStopShort(data) {
 
 function updateUI() {
   const data = appState.currentScenarioData;
+  appState.leavePlan = computeLeavePlanForState();
+  const plan = appState.leavePlan;
   const result = calculateWetnessAndConsequences();
 
   // 1. Sky Banner & Countdown
-  document.getElementById('skyTitle').textContent = data.skyTitle;
+  const nowView = liveNowView();
+  // 60-min profile (5-min buckets): median across models when several are loaded
+  let profile = data.rainProfile;
+  if (nowView && nowView.det.length >= 2) {
+    const t0 = Date.now() / 1000;
+    profile = Array.from({ length: 12 }, (_, i) => {
+      const vals = nowView.det.map(s => rateAt(s, t0 + i * 300 + 150)).filter(v => v !== null);
+      return vals.length ? +median(vals).toFixed(1) : 0;
+    });
+  }
+  document.getElementById('skyTitle').textContent = nowView ? nowView.title : data.skyTitle;
   document.getElementById('skySubtitle').textContent = data.skySubtitle;
-  document.getElementById('skyIcon').textContent = data.skyIcon;
+  document.getElementById('skyIcon').textContent = nowView ? nowView.icon : data.skyIcon;
   document.getElementById('puddleRisk').textContent = data.puddleRisk;
   document.getElementById('windSpeed').textContent = `${data.windSpeed} km/h`;
 
@@ -695,7 +1207,9 @@ function updateUI() {
   const timelineBar = document.getElementById('timelineBar');
   const now = new Date();
 
-  if (data.stopMinutes === 0) {
+  if (plan) {
+    renderLeaveCountdown(plan);
+  } else if (data.stopMinutes === 0) {
     if (countdownCaption) countdownCaption.textContent = "PRECIPITATION STATUS";
     document.getElementById('stopMinutes').textContent = "0";
     if (timerUnit) timerUnit.textContent = "MINS • DRY";
@@ -745,7 +1259,7 @@ function updateUI() {
   // 2. 60-Minute Chart Bars
   const chartEl = document.getElementById('minutelyChart');
   chartEl.innerHTML = '';
-  data.rainProfile.forEach((val, idx) => {
+  profile.forEach((val, idx) => {
     const col = document.createElement('div');
     col.className = 'bar-col';
     const height = Math.min(48, Math.max(4, val * 3.5));
@@ -756,16 +1270,29 @@ function updateUI() {
     else if (val > 0) col.classList.add('light');
     else col.classList.add('dry');
 
-    col.title = `+${idx * 5}m: ${val} mm/h`;
+    col.title = `+${idx * 5}m: ${val} mm/h${nowView && nowView.det.length >= 2 ? ' (median of models)' : ''}`;
     chartEl.appendChild(col);
   });
 
-  // 2.5 Render Google DeepMind WeatherNext 3 Horizon Strip
+  // 2.5 Next-3-hours strip (ensemble rain chance)
   renderWeatherNext3(data);
 
-  // 3. Advice Card
-  document.getElementById('adviceHeadline').textContent = data.adviceHeadline;
-  document.getElementById('adviceDesc').textContent = data.adviceDesc;
+  // 3. Advice Card (leave plan when available, scenario text otherwise)
+  const advice = plan ? describeLeavePlan(plan) : { headline: data.adviceHeadline, desc: data.adviceDesc };
+  document.getElementById('adviceHeadline').textContent = advice.headline;
+  document.getElementById('adviceDesc').textContent = advice.desc;
+  const adviceBadge = document.getElementById('adviceBadge');
+  if (adviceBadge && plan) adviceBadge.textContent = `🧭 ${plan.confidence.toUpperCase()} CONFIDENCE`;
+
+  // Data-source status chip
+  const engLabelEl = document.getElementById('engineLabel');
+  if (engLabelEl && plan && appState.activeScenario === 'live') {
+    const radarTxt = !appState.radar ? 'radar …' : appState.radar.status === 'echo' ? 'radar: rain here'
+      : appState.radar.status === 'none' ? 'radar ✓' : 'radar –';
+    const modelsTxt = plan.sources.det > 1 ? `${plan.sources.det} models` : '1 model';
+    const ensTxt = plan.sources.ens ? ` • ${plan.sources.ens}-run ensemble` : '';
+    engLabelEl.textContent = `${modelsTxt}${ensTxt} • ${radarTxt}`;
+  }
 
   // 4. Consequence Tier Banner with Dynamic Ambient Glow
   const tierBadge = document.getElementById('tierBadge');
@@ -959,10 +1486,15 @@ function updateUI() {
     const depStr = depTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const arrStr = arrTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+    const cand = planCandidateAt(plan, appState.departureDelayMins);
+    const pctTxt = cand ? ` • ${fmtPct(cand.pOk)} dry enough` : '';
+    const delayTxt = appState.departureDelayMins >= 60
+      ? `+${Math.floor(appState.departureDelayMins / 60)}h${appState.departureDelayMins % 60 ? ` ${appState.departureDelayMins % 60}m` : ''}`
+      : `+${appState.departureDelayMins}m`;
     if (appState.departureDelayMins === 0) {
-      scrubText.innerHTML = `Leave <strong>NOW</strong> (~${depStr}) ➔ Arrive ~${arrStr} (Tier ${result.tier})`;
+      scrubText.innerHTML = `Leave <strong>NOW</strong> (~${depStr}) ➔ Arrive ~${arrStr} (Tier ${result.tier}${pctTxt})`;
     } else {
-      scrubText.innerHTML = `Leave in <strong>+${appState.departureDelayMins}m</strong> (~${depStr}) ➔ Arrive ~${arrStr} (Tier ${result.tier})`;
+      scrubText.innerHTML = `Leave in <strong>${delayTxt}</strong> (~${depStr}) ➔ Arrive ~${arrStr} (Tier ${result.tier}${pctTxt})`;
     }
   }
 
@@ -973,7 +1505,19 @@ function updateUI() {
   const isCurrentlyDry = data.stopMinutes === 0;
   const nowTimeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  if (isCurrentlyDry) {
+  if (plan) {
+    const target = planTarget(plan);
+    const nowCand = plan.candidates[0];
+    document.getElementById('compWaitTitle').textContent = target.offsetMin === 0
+      ? (target.kind === 'now' ? `Leave now — good window open` : `Leave now — waiting won't help much`)
+      : target.kind === 'wait'
+        ? `Best: leave ${clockIn(target.offsetMin)} (in ${target.offsetMin} min)`
+        : `Best bet: ${clockIn(target.offsetMin)} (no reliably dry window)`;
+    const waitSub = document.getElementById('compWaitSub');
+    if (waitSub) waitSub.textContent = `${fmtPct(target.pOk)} chance dry enough • Tier ${tierAtOffset(plan, target.offsetMin)} expected`;
+    document.getElementById('compNowTitle').textContent = `Leave Now (${nowTimeString})`;
+    document.getElementById('compNowSub').textContent = `${fmtPct(nowCand.pOk)} chance dry enough • Tier ${tierAtOffset(plan, 0)} if it rains as forecast`;
+  } else if (isCurrentlyDry) {
     document.getElementById('compWaitTitle').textContent = `Zero Wait Needed (Sky Clear)`;
     document.getElementById('compNowTitle').textContent = `Leave Now (${nowTimeString})`;
     document.getElementById('compNowSub').textContent = `Tier 0: Bone Dry & Crisp`;
@@ -988,23 +1532,39 @@ function updateUI() {
 
   // Update rain canvas
   if (window.rainEngineInstance) {
-    window.rainEngineInstance.setIntensity(data.rainIntensity, data.windSpeed);
+    let intensity = data.rainIntensity;
+    if (nowView) {
+      const r = profile[0] || 0;
+      intensity = r > 7.6 ? 'heavy' : r > 2.5 ? 'moderate' : r > 0 ? 'light' : (nowView.minIntensity || 'dry_now');
+    }
+    window.rainEngineInstance.setIntensity(intensity, data.windSpeed);
     if (data.lightning && Math.random() > 0.6) {
       window.rainEngineInstance.triggerLightning();
     }
   }
 
-  // Trigger chime and notification if Alert When Dry is active and rain has stopped
-  if (appState.isRainStopAlertActive && data.stopMinutes === 0) {
+  // Trigger chime and notification when it becomes a good time to leave
+  // (or, without a leave plan, when the rain stops).
+  const goodToGo = plan ? plan.leaveNowOk : data.stopMinutes === 0;
+  if (appState.isRainStopAlertActive && goodToGo) {
     playRainStopChime();
-    showToast("🎉 <strong>Sky is Clear!</strong> Rain has stopped overhead. Safe to step out!", 5000);
+    showToast("🎉 <strong>Good time to leave!</strong> Your trip should stay dry enough now.", 5000);
     if ('Notification' in window && Notification.permission === 'granted') {
+      const title = "RainStop • Good time to leave 🌤️";
+      const opts = {
+        body: plan
+          ? `${fmtPct(plan.candidates[0].pOk)} chance your ${plan.tripMin}-min ${tripVerb()} from ${(appState.origin || DEFAULT_COORDS.name).split(',')[0]} stays dry enough.`
+          : `Overhead precipitation has stopped at ${(appState.origin || DEFAULT_COORDS.name).split(',')[0]}. Perfect time for your commute!`,
+        icon: "icon.svg"
+      };
+      // Android Chrome forbids `new Notification()`; use the service worker there.
+      const viaSw = () => navigator.serviceWorker.ready.then(reg => reg.showNotification(title, opts)).catch(() => {});
       try {
-        new Notification("RainStop • Sky is Clear! 🌤️", {
-          body: `Overhead precipitation has stopped at ${(appState.origin || DEFAULT_COORDS.name).split(',')[0]}. Perfect time for your commute!`,
-          icon: "icon.svg"
-        });
-      } catch (e) {}
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) viaSw();
+        else new Notification(title, opts);
+      } catch (e) {
+        if ('serviceWorker' in navigator) viaSw();
+      }
     }
     appState.isRainStopAlertActive = false;
     const btnAlert = document.getElementById('btnAlertRainStop');
@@ -1019,7 +1579,11 @@ function updateUI() {
   const stripModeIcon = document.getElementById('stripModeIcon');
   const stripModeText = document.getElementById('stripModeText');
 
-  if (stripTimer) {
+  if (stripTimer && plan) {
+    stripTimer.textContent = planTarget(plan).offsetMin === 0
+      ? `Go now (${fmtPct(plan.candidates[0].pOk)})`
+      : `Leave ${clockIn(planTarget(plan).offsetMin)} (${fmtPct(planTarget(plan).pOk)})`;
+  } else if (stripTimer) {
     if (data.stopMinutes > 0) {
       stripTimer.textContent = data.stopBeyondHorizon ? `No break ${formatStopShort(data)}` : `${data.stopMinutes}m to dry`;
     } else {
@@ -1047,7 +1611,8 @@ function updateUI() {
   // 12. Synchronize 1-Page Mobile Action Dock
   const mobileWaitMins = document.getElementById('mobileWaitMins');
   if (mobileWaitMins) {
-    mobileWaitMins.textContent = data.stopMinutes > 0 ? formatStopShort(data) : 'Now';
+    if (plan) mobileWaitMins.textContent = planTarget(plan).offsetMin === 0 ? 'Now' : clockIn(planTarget(plan).offsetMin);
+    else mobileWaitMins.textContent = data.stopMinutes > 0 ? formatStopShort(data) : 'Now';
   }
 }
 
@@ -1072,15 +1637,23 @@ function renderRouteRibbon() {
     ribbonTitle.textContent = `🗺️ RAIN PROFILE ALONG ROUTE (${distKm} km)`;
   }
 
-  // Derive dynamic checkpoints directly from active user route & live weather profile
-  const currentPrecip = (data.rainProfile && data.rainProfile[0]) || 0;
-  const stopMins = data.stopMinutes || 0;
-
-  const originRain = currentPrecip > 4 ? "heavy" : currentPrecip > 1.5 ? "moderate" : currentPrecip > 0.2 ? "light" : "dry";
-  const midRainRate = +(currentPrecip * 0.75).toFixed(1);
-  const midRain = midRainRate > 4 ? "heavy" : midRainRate > 1.5 ? "moderate" : midRainRate > 0.2 ? "light" : "dry";
-  const destRainRate = stopMins > 25 ? +(currentPrecip > 3 ? 1.8 : 0.4).toFixed(1) : 0;
-  const destRain = destRainRate > 4 ? "heavy" : destRainRate > 1.5 ? "moderate" : destRainRate > 0.2 ? "light" : "dry";
+  // Forecast rain (median across models) at the moment you pass each checkpoint, for the
+  // departure chosen on the slider. Weather is fetched for the origin point only.
+  const tripMin = tripMinutes(distKm, appState.transportMode);
+  const departSec = Date.now() / 1000 + appState.departureDelayMins * 60;
+  const rateWhenPassing = (frac) => {
+    const r = medianRateAt(departSec + frac * tripMin * 60);
+    if (r !== null) return +r.toFixed(1);
+    const idx = Math.min(11, Math.floor((appState.departureDelayMins + frac * tripMin) / 5));
+    return (data.rainProfile && data.rainProfile[idx]) || 0;
+  };
+  const classify = (r) => r > 4 ? "heavy" : r > 1.5 ? "moderate" : r > 0.2 ? "light" : "dry";
+  const currentPrecip = rateWhenPassing(0);
+  const originRain = classify(currentPrecip);
+  const midRainRate = rateWhenPassing(0.5);
+  const midRain = classify(midRainRate);
+  const destRainRate = rateWhenPassing(1);
+  const destRain = classify(destRainRate);
 
   const checkpoints = [
     {
@@ -1118,21 +1691,29 @@ function renderRouteRibbon() {
 
     const markerLabel = idx === 0 ? "🟢 A" : idx === checkpoints.length - 1 ? "🏁 B" : "📍";
 
-    node.innerHTML = `
-      <span class="cp-badge" title="${idx === 0 ? 'Origin' : idx === checkpoints.length - 1 ? 'Destination' : 'Waypoint'}">${markerLabel} ${weatherIcon}</span>
-      <span class="cp-name" title="${cp.name}">${cp.name}</span>
-      <span class="cp-rain ${cp.rain}">${cp.text}</span>
-    `;
+    // Built with textContent: place names come from URLs/geocoders and must not be parsed as HTML.
+    const badge = document.createElement('span');
+    badge.className = 'cp-badge';
+    badge.title = idx === 0 ? 'Origin' : idx === checkpoints.length - 1 ? 'Destination' : 'Waypoint';
+    badge.textContent = `${markerLabel} ${weatherIcon}`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'cp-name';
+    nameEl.title = cp.name;
+    nameEl.textContent = cp.name;
+    const rainEl = document.createElement('span');
+    rainEl.className = `cp-rain ${cp.rain}`;
+    rainEl.textContent = cp.text;
+    node.append(badge, nameEl, rainEl);
     trackEl.appendChild(node);
   });
 
-  const isAnyRain = checkpoints.some(c => c.rain !== 'dry') || currentPrecip > 0.1;
+  const isAnyRain = checkpoints.some(c => c.rain !== 'dry');
 
   if (warningEl) {
     if (isAnyRain) {
-      warningEl.textContent = `⚠️ Live Doppler alert: Active rain cell (${currentPrecip.toFixed(1)} mm/h) along ${originShort} ➔ ${destShort} route.`;
+      warningEl.textContent = `⚠️ Forecast: rain while you travel ${originShort} ➔ ${destShort} (up to ${Math.max(currentPrecip, midRainRate, destRainRate).toFixed(1)} mm/h, when you pass).`;
     } else {
-      warningEl.textContent = `🟢 Clear skies detected along ${originShort} ➔ ${destShort} route.`;
+      warningEl.textContent = `🟢 No rain forecast while you travel ${originShort} ➔ ${destShort}.`;
     }
   }
 
@@ -1262,13 +1843,20 @@ function setupPhotonAutocomplete(inputId, dropdownId, clearBtnId, stateKey) {
   function createDropdownRow(icon, title, sub, lat, lon) {
     const row = document.createElement('div');
     row.className = 'autocomplete-item';
-    row.innerHTML = `
-      <span class="auto-icon">${icon}</span>
-      <div class="auto-text">
-        <div class="auto-title">${title}</div>
-        <div class="auto-subtitle">${sub}</div>
-      </div>
-    `;
+    // textContent only: titles/subtitles come from external geocoders.
+    const iconEl = document.createElement('span');
+    iconEl.className = 'auto-icon';
+    iconEl.textContent = icon;
+    const textWrap = document.createElement('div');
+    textWrap.className = 'auto-text';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'auto-title';
+    titleEl.textContent = title;
+    const subEl = document.createElement('div');
+    subEl.className = 'auto-subtitle';
+    subEl.textContent = sub;
+    textWrap.append(titleEl, subEl);
+    row.append(iconEl, textWrap);
     row.addEventListener('click', () => {
       input.value = title;
       appState[stateKey] = title;
@@ -1356,9 +1944,36 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
 
 let lastSuccessfulFetchTime = 0;
 
+// A ground report only changes the "now" state; the future still comes from the forecast,
+// and the leave-time engine weighs the report with a decaying influence.
+function applyGroundReport(payload) {
+  const report = activeGroundReport();
+  if (!report || !payload) return payload;
+  const profile = Array.isArray(payload.rainProfile) ? [...payload.rainProfile] : new Array(12).fill(0);
+  if (report.type === 'rain') {
+    for (let i = 0; i < 3; i++) profile[i] = Math.max(profile[i] || 0, 1.0);
+    payload.skyTitle = "Raining Here (You Reported)";
+    payload.skyIcon = "🌧️";
+    payload.stopMinutes = Math.max(payload.stopMinutes || 0, 15);
+    if (payload.rainIntensity === 'dry_now') payload.rainIntensity = 'light';
+  } else {
+    for (let i = 0; i < 3; i++) profile[i] = 0;
+    payload.skyTitle = "Dry Here (You Reported)";
+    payload.skyIcon = "☀️";
+    payload.stopMinutes = 0;
+    payload.rainIntensity = 'dry_now';
+    payload.lightning = false;
+    payload.puddleRisk = "Dry (< 1 cm)";
+  }
+  payload.rainProfile = profile;
+  return payload;
+}
+
 async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT Kanpur, Uttar Pradesh") {
   try {
-    document.getElementById('livePulsingDot').textContent = "● FETCHING LIVE...";
+    if (appState.activeScenario === 'live') document.getElementById('livePulsingDot').textContent = "● FETCHING LIVE...";
+    // Multi-model, ensemble and radar load in parallel and refine the leave plan as they arrive.
+    fetchForecastExtras(lat, lon);
     
     // Request 48-hour window (forecast_days=2). timeformat=unixtime gives UTC epoch seconds,
     // so slot alignment does not depend on the browser's timezone matching the location's.
@@ -1368,6 +1983,9 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     const res = await fetchWithTimeout(url, {}, 6500);
     if (!res.ok) throw new Error("API error: " + res.status);
     const json = await res.json();
+    // Drop responses for a location the user has already moved away from (e.g. cached
+    // location fetch finishing after the GPS fix) — they would clobber the newer data.
+    if (!sameSpot(appState.originCoords, { lat, lon })) return;
 
     const cur = json.current || {};
     const wcode = Number(cur.weather_code) || 0;
@@ -1399,6 +2017,9 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     // Without a 15-minute series we can't say when rain stops — treat as a failed fetch
     // (falls back to a recent cached forecast) instead of guessing.
     if (!slotRates.length) throw new Error("No usable minutely_15 precipitation data");
+    const bundleNow = ensureBundle(lat, lon);
+    bundleNow.a0 = { group: 'det', system: 'best_match', stepSec: 900, endTimes: slotTimes, rates: slotRates };
+    bundleNow.a0At = Date.now();
 
     // 2. Is it raining now? Precipitation is reported in 0.1 mm steps, so any non-zero
     // value (>= 0.4 mm/h) is real rain/drizzle. Rate is the only wet test, so the stop
@@ -1437,7 +2058,7 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     const hourly = json.hourly || {};
     const hTime = Array.isArray(hourly.time) ? hourly.time : [];
     const hourlyAt = (arr, offsetH, fallback) => {
-      const idx = hTime.findIndex(t => t >= nowSec + offsetH * 3600);
+      const idx = hTime.findIndex(t => t >= nowSec + (offsetH - 1) * 3600 + 1800);
       return (idx !== -1 && Array.isArray(arr) && arr[idx] !== undefined && arr[idx] !== null) ? arr[idx] : fallback;
     };
     const hourlyPrecipSlice = [1, 2, 3].map(h => hourlyAt(hourly.precipitation, h, 0));
@@ -1512,43 +2133,30 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
       stopBeyondHorizon
     };
 
-    // If user confirmed "Dry Here" ground truth in the last 30 minutes, lock dry state.
-    // After that, trust the forecast again (otherwise one tap locks the app to "dry" forever).
-    if (appState.userOverrodeDry && Date.now() - (appState.dryOverrideAt || 0) > 30 * 60000) {
-      appState.userOverrodeDry = false;
-    }
-    if (appState.userOverrodeDry) {
-      payload.skyTitle = "Clear Sky (Ground Confirmed)";
-      payload.skySubtitle = `📍 ${placeName} (${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E) • ${temp}°C • 100% Bone Dry`;
-      payload.skyIcon = "☀️";
-      payload.stopMinutes = 0;
-      payload.rainProfile = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-      payload.puddleRisk = "Dry (< 1 cm)";
-      payload.rainIntensity = 'dry_now';
-      payload.lightning = false;
-      payload.adviceHeadline = `100% Clear Skies at ${placeName.split(',')[0]}`;
-      payload.adviceDesc = `Ground truth confirmed: zero precipitation overhead. Roads are dry, safe for white sneakers.`;
-      payload.routeAlert = `🟢 Clear skies confirmed along travel route.`;
-    }
+    // Re-apply a recent "Rain Here" / "Dry Here" report (affects "now" only; expires in 30 min).
+    applyGroundReport(payload);
 
     // 5. Sanity Audit & Local Cache Storage with Timestamp
     const validated = validateForecastPayload(payload);
     SCENARIOS.live = validated;
     lastSuccessfulFetchTime = Date.now();
 
-    localStorage.setItem('rainstop_cached_forecast_v3', JSON.stringify({
-      timestamp: Date.now(),
-      data: validated
-    }));
+    try {
+      localStorage.setItem('rainstop_cached_forecast_v3', JSON.stringify({
+        timestamp: Date.now(),
+        lat, lon,
+        data: validated
+      }));
+    } catch (e) { /* storage full / private mode: cache is optional */ }
 
+    if (appState.activeScenario !== 'live') return; // a simulation is on screen; keep live data for later
     appState.currentScenarioData = validated;
     const shortPlace = placeName.split(',')[0].trim();
     document.getElementById('livePulsingDot').textContent = `● LIVE (${shortPlace})`;
-    const engLabel = document.getElementById('engineLabel');
-    if (engLabel) engLabel.textContent = `${shortPlace} Live`;
     updateUI();
   } catch (err) {
     console.warn("Live weather fetch failed, attempting cached fallback:", err);
+    if (!sameSpot(appState.originCoords, { lat, lon })) return; // stale request for an old location
     // v3 key: older caches stored mm/15min values in 15-minute buckets — never reuse them.
     const rawCached = localStorage.getItem('rainstop_cached_forecast_v3');
     if (rawCached) {
@@ -1557,7 +2165,7 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
         const data = parsed.data;
         const cacheAgeMins = parsed.timestamp ? Math.round((Date.now() - parsed.timestamp) / 60000) : 999;
 
-        if (data && cacheAgeMins < 30) {
+        if (data && cacheAgeMins < 30 && sameSpot(parsed, { lat, lon })) {
           // stopMinutes and rainProfile are relative to fetch time — age them to "now".
           if (data.stopMinutes > 0) {
             data.stopMinutes = data.stopBeyondHorizon
@@ -1570,6 +2178,7 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
             data.rainProfile = data.rainProfile.slice(shift).concat(Array(shift).fill(last));
           }
           SCENARIOS.live = validateForecastPayload(data);
+          if (appState.activeScenario !== 'live') return;
           appState.currentScenarioData = SCENARIOS.live;
           document.getElementById('livePulsingDot').textContent = `● CACHED (${cacheAgeMins}m ago)`;
           updateUI();
@@ -1587,8 +2196,237 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
       appState.currentScenarioData = SCENARIOS.live;
       updateUI();
     }
-    document.getElementById('livePulsingDot').textContent = "● OFFLINE FALLBACK";
+    if (appState.activeScenario === 'live') document.getElementById('livePulsingDot').textContent = "● OFFLINE FALLBACK";
   }
+}
+
+// ============================================================================
+// 8.5 MULTI-MODEL + ENSEMBLE + RADAR FETCHERS (feed the leave-time engine)
+// ============================================================================
+// Every source is optional and fails independently; the UI improves as each arrives.
+
+const DET_MODELS = ['ecmwf_ifs025', 'gfs_seamless', 'icon_seamless', 'jma_seamless'];
+const ENS_MODELS = ['ecmwf_ifs025', 'gfs025', 'icon_global_eps'];
+const DET_TTL_MS = 10 * 60000;
+const ENS_TTL_MS = 30 * 60000;
+const RADAR_TTL_MS = 5 * 60000;
+const DET_MAX_AGE_MS = 3 * 3600000;
+const ENS_MAX_AGE_MS = 6 * 3600000;
+const BUNDLE_CACHE_KEY = 'rainstop_bundle_v1';
+const RADAR_SAMPLE_ZOOM = 7; // RainViewer serves z <= 7 only
+
+function sameSpot(a, b) {
+  return !!a && !!b && Math.abs(a.lat - b.lat) < 0.02 && Math.abs(a.lon - b.lon) < 0.02;
+}
+
+function ensureBundle(lat, lon) {
+  if (!sameSpot(appState.forecastBundle, { lat, lon })) {
+    appState.forecastBundle = { lat, lon, a0: null, det: null, detAt: 0, ens: null, ensAt: 0 };
+    loadBundleCache(lat, lon);
+  }
+  return appState.forecastBundle;
+}
+
+function saveBundleCache() {
+  const b = appState.forecastBundle;
+  if (!b) return;
+  try {
+    localStorage.setItem(BUNDLE_CACHE_KEY, JSON.stringify({
+      lat: b.lat, lon: b.lon, det: b.det, detAt: b.detAt, ens: b.ens, ensAt: b.ensAt
+    }));
+  } catch (e) { /* quota or private mode: cache is optional */ }
+}
+
+function loadBundleCache(lat, lon) {
+  try {
+    const c = JSON.parse(localStorage.getItem(BUNDLE_CACHE_KEY) || 'null');
+    if (!c || !sameSpot(c, { lat, lon })) return;
+    const b = appState.forecastBundle;
+    if (c.det && Date.now() - c.detAt < DET_MAX_AGE_MS) { b.det = c.det; b.detAt = c.detAt; }
+    if (c.ens && Date.now() - c.ensAt < ENS_MAX_AGE_MS) { b.ens = c.ens; b.ensAt = c.ensAt; }
+  } catch (e) { /* ignore corrupt cache */ }
+}
+
+// Deterministic models at 15-min steps. Values are mm per 15 min -> x4 = mm/h.
+async function fetchDetModels(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&minutely_15=precipitation&models=${DET_MODELS.join(',')}&forecast_days=2&timeformat=unixtime`;
+  const res = await fetchWithTimeout(url, {}, 6500);
+  if (!res.ok) throw new Error('multi-model API ' + res.status);
+  const json = await res.json();
+  const m = json.minutely_15 || {};
+  if (!Array.isArray(m.time)) throw new Error('multi-model: no time axis');
+  return DET_MODELS
+    .filter(model => Array.isArray(m[`precipitation_${model}`]))
+    .map(model => ({
+      group: 'det', system: model, stepSec: 900, endTimes: m.time,
+      rates: m[`precipitation_${model}`].map(v => (v === null || v === undefined) ? null : Math.max(0, v) * 4)
+    }))
+    .filter(s => s.rates.some(v => v !== null));
+}
+
+// Ensemble members, hourly. Hourly value in mm == mean rate in mm/h for that hour.
+async function fetchEnsemble(lat, lon) {
+  const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat}&longitude=${lon}&hourly=precipitation&models=${ENS_MODELS.join(',')}&forecast_days=2&timeformat=unixtime`;
+  const res = await fetchWithTimeout(url, {}, 9000);
+  if (!res.ok) throw new Error('ensemble API ' + res.status);
+  const json = await res.json();
+  const h = json.hourly || {};
+  if (!Array.isArray(h.time)) throw new Error('ensemble: no time axis');
+  return Object.keys(h)
+    .filter(k => k.startsWith('precipitation') && Array.isArray(h[k]))
+    .map(k => ({
+      group: 'ens',
+      // precipitation_member07_ecmwf_ifs025_ensemble -> ecmwf_ifs025_ensemble (members of one system averaged together)
+      system: k.replace(/^precipitation_?/, '').replace(/member\d+_?/, '') || 'ens',
+      stepSec: 3600, endTimes: h.time,
+      rates: h[k].map(v => (v === null || v === undefined) ? null : Math.max(0, v))
+    }))
+    .filter(s => s.rates.some(v => v !== null));
+}
+
+async function fetchForecastExtras(lat, lon) {
+  const bundle = ensureBundle(lat, lon);
+  const now = Date.now();
+  const jobs = [];
+
+  if (now - bundle.detAt > DET_TTL_MS) {
+    jobs.push(fetchDetModels(lat, lon).then(det => {
+      if (appState.forecastBundle !== bundle || !det.length) return;
+      bundle.det = det; bundle.detAt = Date.now();
+      saveBundleCache(); updateUI();
+    }).catch(err => console.warn('Multi-model fetch failed:', err)));
+  }
+  if (now - bundle.ensAt > ENS_TTL_MS) {
+    jobs.push(fetchEnsemble(lat, lon).then(ens => {
+      if (appState.forecastBundle !== bundle || !ens.length) return;
+      bundle.ens = ens; bundle.ensAt = Date.now();
+      saveBundleCache(); updateUI();
+    }).catch(err => console.warn('Ensemble fetch failed:', err)));
+  }
+  if (!appState.radar || !appState.radar.fetchedAt || now - appState.radar.fetchedAt > RADAR_TTL_MS || !sameSpot(appState.radar, { lat, lon })) {
+    jobs.push(refreshRadar(lat, lon).catch(err => console.warn('Radar refresh failed:', err)));
+  }
+  await Promise.all(jobs);
+}
+
+// ---------------------------------------------------------------------------
+// RainViewer radar: map overlay + positive-only "rain observed here" signal.
+// Radar coverage over India is patchy, so NO echo is never treated as "dry".
+// ---------------------------------------------------------------------------
+
+let radarLayer = null;
+let radarControl = null;
+let radarLabelEl = null;
+let radarVisible = true;
+
+function latLonToTilePixel(lat, lon, z) {
+  const n = Math.pow(2, z);
+  const phi = lat * Math.PI / 180;
+  const X = (lon + 180) / 360 * n * 256;
+  const Y = (1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2 * n * 256;
+  return { x: Math.floor(X / 256), y: Math.floor(Y / 256), px: Math.floor(X % 256), py: Math.floor(Y % 256) };
+}
+
+async function fetchRadarMeta() {
+  const res = await fetchWithTimeout('https://api.rainviewer.com/public/weather-maps.json', {}, 4000);
+  if (!res.ok) throw new Error('RainViewer ' + res.status);
+  const json = await res.json();
+  const past = json.radar && Array.isArray(json.radar.past) ? json.radar.past : [];
+  if (!json.host || !past.length) throw new Error('RainViewer: no frames');
+  const frame = past[past.length - 1];
+  return { host: json.host, frame, ageMin: Math.round((Date.now() / 1000 - frame.time) / 60) };
+}
+
+function sampleRadarAt(lat, lon, meta) {
+  return new Promise(resolve => {
+    if (typeof Image === 'undefined' || typeof document.createElement !== 'function') {
+      resolve({ status: 'unavailable' });
+      return;
+    }
+    const t = latLonToTilePixel(lat, lon, RADAR_SAMPLE_ZOOM);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const timer = setTimeout(() => resolve({ status: 'unavailable' }), 4000);
+    img.onload = () => {
+      clearTimeout(timer);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 256;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const px = ctx.getImageData(0, 0, 256, 256).data;
+        const alphaAt = (x, y) => (x < 0 || y < 0 || x > 255 || y > 255) ? 0 : px[(y * 256 + x) * 4 + 3];
+        let centre = 0, nearby = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (alphaAt(t.px + dx, t.py + dy) > 0) centre++;
+        // ~12 px at z7 ≈ 13 km at 26°N
+        for (let dy = -12; dy <= 12; dy++) for (let dx = -12; dx <= 12; dx++) if (alphaAt(t.px + dx, t.py + dy) > 0) nearby++;
+        const echo = alphaAt(t.px, t.py) > 0 && centre >= 3;
+        resolve({ status: echo ? 'echo' : 'none', nearby: !echo && nearby >= 5 });
+      } catch (e) {
+        resolve({ status: 'unavailable' });
+      }
+    };
+    img.onerror = () => { clearTimeout(timer); resolve({ status: 'unavailable' }); };
+    img.src = `${meta.host}${meta.frame.path}/256/${RADAR_SAMPLE_ZOOM}/${t.x}/${t.y}/2/1_1.png`;
+  });
+}
+
+function updateRadarOverlay(meta) {
+  if (!mapInstance || typeof L === 'undefined') return;
+  if (radarLayer) mapInstance.removeLayer(radarLayer);
+  radarLayer = L.tileLayer(`${meta.host}${meta.frame.path}/256/{z}/{x}/{y}/2/1_1.png`, {
+    opacity: 0.55,
+    maxNativeZoom: 7,
+    maxZoom: 19,
+    zIndex: 300,
+    attribution: 'Radar © <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>'
+  });
+  if (radarVisible) radarLayer.addTo(mapInstance);
+
+  if (!radarControl) {
+    radarControl = L.control({ position: 'topright' });
+    radarControl.onAdd = () => {
+      const div = L.DomUtil.create('div', 'radar-toggle-control');
+      div.style.cssText = 'background:rgba(15,23,42,0.85);color:#e2e8f0;padding:4px 8px;border-radius:8px;font:12px Inter,sans-serif;';
+      const label = document.createElement('label');
+      label.style.cursor = 'pointer';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = radarVisible;
+      radarLabelEl = document.createElement('span');
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(' '));
+      label.appendChild(radarLabelEl);
+      div.appendChild(label);
+      L.DomEvent.disableClickPropagation(div);
+      box.addEventListener('change', (e) => {
+        radarVisible = e.target.checked;
+        if (radarLayer) {
+          if (radarVisible) radarLayer.addTo(mapInstance);
+          else mapInstance.removeLayer(radarLayer);
+        }
+      });
+      return div;
+    };
+    radarControl.addTo(mapInstance);
+  }
+  if (radarLabelEl) radarLabelEl.textContent = `Radar ${fmtClock(new Date(meta.frame.time * 1000))} (${meta.ageMin} min old)`;
+}
+
+async function refreshRadar(lat, lon) {
+  let meta;
+  try {
+    meta = await fetchRadarMeta();
+  } catch (e) {
+    appState.radar = { status: 'unavailable', fetchedAt: Date.now(), lat, lon };
+    return;
+  }
+  updateRadarOverlay(meta);
+  const stale = meta.ageMin > 20;
+  const sample = stale ? { status: 'stale' } : await sampleRadarAt(lat, lon, meta);
+  if (!sameSpot(appState.forecastBundle, { lat, lon })) return; // location changed meanwhile
+  appState.radar = { ...sample, frameTime: meta.frame.time, ageMin: meta.ageMin, fetchedAt: Date.now(), lat, lon };
+  updateUI();
 }
 
 // ============================================================================
@@ -1614,6 +2452,10 @@ function playRainStopChime() {
       osc.stop(ctx.currentTime + idx * 0.12 + 0.55);
     });
   } catch (e) {}
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function showToast(message, duration = 3200) {
@@ -1718,7 +2560,7 @@ async function detectLocationWithFallback(isUserTriggered = false) {
 
     if (btn) btn.innerHTML = '📍 Auto-Detect';
     if (isUserTriggered) {
-      showToast(`📍 Location locked (${source}): <strong>${placeName}</strong>`, 4000);
+      showToast(`📍 Location locked (${source}): <strong>${escapeHtml(placeName)}</strong>`, 4000);
     }
   }
 
@@ -1823,8 +2665,13 @@ function setupEventListeners() {
       const destName = appState.dest.split(',')[0];
       const shareUrl = `${window.location.origin}${window.location.pathname}?lat=${appState.originCoords.lat.toFixed(4)}&lon=${appState.originCoords.lon.toFixed(4)}&q=${encodeURIComponent(originName)}`;
       
+      const plan = appState.leavePlan;
       const shareText = `🌧️ RainStop Forecast for ${originName}:\n` +
-        (data.stopBeyondHorizon
+        (plan
+          ? (planTarget(plan).offsetMin === 0
+            ? `✅ Leave now (${fmtPct(plan.candidates[0].pOk)} chance of a dry-enough trip)\n`
+            : `⏱️ Best time to leave: ~${clockIn(planTarget(plan).offsetMin)} (${fmtPct(planTarget(plan).pOk)} chance dry enough; now ${fmtPct(plan.candidates[0].pOk)})\n`)
+          : data.stopBeyondHorizon
           ? `⏱️ No dry break forecast for ${formatStopShort(data)}\n`
           : `⏱️ Rain easing in: ${data.stopMinutes} mins\n`) +
         `🚶 Commute: ${originName} ➔ ${destName} (${appState.routeDistanceKm} km)\n` +
@@ -1882,7 +2729,11 @@ function setupEventListeners() {
 
       const scenarioKey = card.dataset.scenario;
       if (scenarioKey === 'live') {
-        fetchLiveOpenMeteo(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name);
+        appState.activeScenario = 'live';
+        appState.currentScenarioData = SCENARIOS.live;
+        updateUI();
+        const o = appState.originCoords || DEFAULT_COORDS;
+        fetchLiveOpenMeteo(o.lat, o.lon, appState.origin || DEFAULT_COORDS.name);
       } else {
         appState.activeScenario = scenarioKey;
         appState.currentScenarioData = { ...SCENARIOS[scenarioKey] };
@@ -1922,57 +2773,26 @@ function setupEventListeners() {
   const offlineBanner = document.getElementById('offlineBanner');
   window.addEventListener('online', () => {
     if (offlineBanner) offlineBanner.classList.add('hidden');
-    fetchLiveOpenMeteo(DEFAULT_COORDS.lat, DEFAULT_COORDS.lon, DEFAULT_COORDS.name);
+    const o = appState.originCoords || DEFAULT_COORDS;
+    fetchLiveOpenMeteo(o.lat, o.lon, appState.origin || DEFAULT_COORDS.name);
   });
 
   window.addEventListener('offline', () => {
     if (offlineBanner) offlineBanner.classList.remove('hidden');
   });
 
-  // Weather Engine Switcher (Open-Meteo vs WeatherNext 3)
-  const btnEngineMeteo = document.getElementById('btnEngineMeteo');
-  const btnEngineWeatherNext3 = document.getElementById('btnEngineWeatherNext3');
-  const wn3Badge = document.getElementById('wn3Badge');
+  // The old "WeatherNext 3" switch never called a Google model (it only scaled rain by 0.92),
+  // so it is hidden; the ids stay for backwards compatibility. Forget any saved choice.
+  try { localStorage.removeItem('rainstop_weather_engine'); } catch (e) {}
 
-  if (btnEngineMeteo && btnEngineWeatherNext3) {
-    if (appState.weatherEngine === 'weathernext3') {
-      btnEngineWeatherNext3.classList.add('active');
-      btnEngineMeteo.classList.remove('active');
-      if (wn3Badge) wn3Badge.textContent = "0.05° Satellite Grounded";
-    }
-
-    btnEngineMeteo.addEventListener('click', () => {
-      appState.weatherEngine = 'openmeteo';
-      btnEngineMeteo.classList.add('active');
-      btnEngineWeatherNext3.classList.remove('active');
-      if (wn3Badge) wn3Badge.textContent = "Doppler Radar";
-      localStorage.setItem('rainstop_weather_engine', 'openmeteo');
-      showToast("⚡ <strong>Open-Meteo Active!</strong> High-resolution 15-minute Doppler radar.", 3000);
+  // "Damp socks OK" tolerance toggle (per-viewer preference)
+  const toggleDampOk = document.getElementById('toggleDampOk');
+  if (toggleDampOk) {
+    toggleDampOk.checked = appState.dampOk;
+    toggleDampOk.addEventListener('change', (e) => {
+      appState.dampOk = e.target.checked;
+      try { localStorage.setItem('rainstop_damp_ok', appState.dampOk ? '1' : '0'); } catch (err) {}
       updateUI();
-    });
-
-    btnEngineWeatherNext3.addEventListener('click', () => {
-      appState.weatherEngine = 'weathernext3';
-      btnEngineWeatherNext3.classList.add('active');
-      btnEngineMeteo.classList.remove('active');
-      if (wn3Badge) wn3Badge.textContent = "0.05° Satellite Grounded";
-      localStorage.setItem('rainstop_weather_engine', 'weathernext3');
-      showToast("🧠 <strong>Google DeepMind WeatherNext 3 Active!</strong> Ingesting 0.05° satellite mosaics.", 4000);
-      updateUI();
-    });
-  }
-
-  // Google Maps Weather API Key save
-  const btnSaveGoogleKey = document.getElementById('btnSaveGoogleKey');
-  const inputGoogleKey = document.getElementById('inputGoogleWeatherKey');
-  if (inputGoogleKey) {
-    inputGoogleKey.value = localStorage.getItem('rainstop_google_weather_key') || '';
-  }
-  if (btnSaveGoogleKey && inputGoogleKey) {
-    btnSaveGoogleKey.addEventListener('click', () => {
-      const key = inputGoogleKey.value.trim();
-      localStorage.setItem('rainstop_google_weather_key', key);
-      showToast(key ? "🔑 Google Cloud Weather API Key saved!" : "ℹ️ Using DeepMind Neural Ensemble mode.");
     });
   }
 
@@ -1981,50 +2801,28 @@ function setupEventListeners() {
     detectLocationWithFallback(true);
   });
 
-  // Ground truth rain button
+  // Ground truth buttons: record a 30-min report; the forecast still drives the future.
+  function reportGroundTruth(type) {
+    const wasLab = appState.activeScenario !== 'live';
+    appState.groundReport = { type, at: Date.now() };
+    appState.activeScenario = 'live';
+    SCENARIOS.live = validateForecastPayload(applyGroundReport({ ...SCENARIOS.live }));
+    appState.currentScenarioData = SCENARIOS.live;
+    if (wasLab) {
+      document.querySelectorAll('.lab-scenario-card').forEach(c => c.classList.toggle('active', c.dataset.scenario === 'live'));
+      document.getElementById('livePulsingDot').textContent = "● LIVE";
+      const o = appState.originCoords || DEFAULT_COORDS;
+      fetchLiveOpenMeteo(o.lat, o.lon, appState.origin || DEFAULT_COORDS.name);
+    }
+    updateUI();
+    showToast(type === 'rain'
+      ? "🌧️ <strong>Noted:</strong> raining here. This lowers the chance of a dry trip for the next ~30 min."
+      : "☀️ <strong>Noted:</strong> dry here now. Rain the forecast shows later in your trip still counts.", 4500);
+  }
   const btnReportRain = document.getElementById('btnReportRain');
-  if (btnReportRain) {
-    btnReportRain.addEventListener('click', () => {
-      appState.userOverrodeDry = false;
-      SCENARIOS.live.skyTitle = "Live Rain Shower (Observed)";
-      SCENARIOS.live.skyIcon = "🌧️";
-      SCENARIOS.live.stopMinutes = 45;
-      SCENARIOS.live.rainIntensity = 'moderate';
-      SCENARIOS.live.rainProfile = [4.2, 3.8, 2.5, 1.5, 0.8, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-      SCENARIOS.live.adviceHeadline = "Rain easing in ~45 mins (Wait 1 Chai)";
-      SCENARIOS.live.adviceDesc = "Active overhead precipitation calibrated with live ground observation. Stepping out now without gear will soak clothes. Rain clears in ~45 mins.";
-      appState.currentScenarioData = SCENARIOS.live;
-      if (window.rainEngineInstance) {
-        window.rainEngineInstance.setIntensity('moderate', 15);
-      }
-      updateUI();
-      showToast("🌧️ <strong>Live Rain Confirmed!</strong> Nowcast calibrated to active rain cell.", 4000);
-    });
-  }
-
-  // Ground truth dry button
+  if (btnReportRain) btnReportRain.addEventListener('click', () => reportGroundTruth('rain'));
   const btnReportDry = document.getElementById('btnReportDry');
-  if (btnReportDry) {
-    btnReportDry.addEventListener('click', () => {
-      appState.userOverrodeDry = true;
-      appState.dryOverrideAt = Date.now();
-      SCENARIOS.live.skyTitle = "Clear Sky (Ground Confirmed)";
-      SCENARIOS.live.skySubtitle = "0.0 mm/h • 100% Bone Dry Outdoors";
-      SCENARIOS.live.skyIcon = "☀️";
-      SCENARIOS.live.stopMinutes = 0;
-      SCENARIOS.live.rainIntensity = 'dry_now';
-      SCENARIOS.live.rainProfile = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-      SCENARIOS.live.adviceHeadline = "100% Bone Dry Outdoors";
-      SCENARIOS.live.adviceDesc = "User confirmed zero precipitation overhead. Safe to step out in fresh white sneakers.";
-      SCENARIOS.live.puddleRisk = "Dry (< 1 cm)";
-      appState.currentScenarioData = SCENARIOS.live;
-      if (window.rainEngineInstance) {
-        window.rainEngineInstance.setIntensity('dry_now', 5);
-      }
-      updateUI();
-      showToast("☀️ <strong>Ground Truth Confirmed!</strong> Nowcast set to 100% dry (Tier 0).", 4000);
-    });
-  }
+  if (btnReportDry) btnReportDry.addEventListener('click', () => reportGroundTruth('dry'));
 
   // Recenter map button
   const btnLocateCampus = document.getElementById('btnLocateCampus');
@@ -2185,10 +2983,9 @@ function setupEventListeners() {
 
   // Bottom drawer pick buttons
   document.getElementById('btnPickWait').addEventListener('click', () => {
-    const stopMins = (appState.currentScenarioData && appState.currentScenarioData.stopMinutes !== undefined) 
-      ? appState.currentScenarioData.stopMinutes 
-      : 0;
-    slider.value = Math.min(45, stopMins);
+    const mins = bestDepartureMins();
+    if (mins > Number(slider.max)) showToast(`⏱️ Best time ~${clockIn(mins)} is beyond the ${Number(slider.max) / 60} h scrubber.`, 4000);
+    slider.value = Math.min(Number(slider.max), mins);
     slider.dispatchEvent(new Event('input'));
   });
 
@@ -2225,12 +3022,12 @@ function initMobileNavigation() {
 
   if (btnMobileWait && slider) {
     btnMobileWait.addEventListener('click', () => {
-      const stopMins = (appState.currentScenarioData && appState.currentScenarioData.stopMinutes !== undefined)
-        ? appState.currentScenarioData.stopMinutes
-        : 0;
-      slider.value = Math.min(45, stopMins);
+      const mins = bestDepartureMins();
+      slider.value = Math.min(Number(slider.max), mins);
       slider.dispatchEvent(new Event('input'));
-      showToast(`⏱️ Departure set for ${stopMins > 0 ? `+${stopMins}m` : 'NOW'} (Dry arrival)!`);
+      showToast(mins > Number(slider.max)
+        ? `⏱️ Best time ~${clockIn(mins)} is beyond the ${Number(slider.max) / 60} h scrubber.`
+        : `⏱️ Departure set for ${mins > 0 ? `~${clockIn(mins)} (+${mins}m)` : 'NOW'} — best time to leave`);
     });
   }
 }
@@ -2269,7 +3066,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const paramQ = urlParams.get('q');
 
   if (!isNaN(paramLat) && !isNaN(paramLon)) {
-    const sharedName = paramQ ? decodeURIComponent(paramQ) : "Shared Location";
+    const sharedName = paramQ || "Shared Location"; // URLSearchParams already decodes
     appState.origin = sharedName;
     appState.originCoords = { lat: paramLat, lon: paramLon };
     const inputO = document.getElementById('inputOrigin');
@@ -2284,7 +3081,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Automatic Nowcast Heartbeat: Re-fetch every 2.5 minutes while tab is active
   setInterval(() => {
-    if (appState.currentScenarioData === SCENARIOS.live && !document.hidden) {
+    if (appState.activeScenario === 'live' && !document.hidden) {
       const coords = appState.originCoords || DEFAULT_COORDS;
       fetchLiveOpenMeteo(coords.lat, coords.lon, appState.origin || DEFAULT_COORDS.name);
     }
@@ -2292,7 +3089,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Auto-sync whenever user returns to this tab / unlocks screen
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && appState.currentScenarioData === SCENARIOS.live) {
+    if (!document.hidden && appState.activeScenario === 'live') {
       const elapsed = Date.now() - lastSuccessfulFetchTime;
       if (elapsed > 120000) {
         const coords = appState.originCoords || DEFAULT_COORDS;

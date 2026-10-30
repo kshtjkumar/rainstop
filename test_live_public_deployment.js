@@ -215,11 +215,11 @@ async function runLiveDeploymentAudit() {
   assert(manifest.icons && manifest.icons.length > 0, "PWA has application icons defined");
 
   const liveSw = fetchedFiles['/sw.js'];
-  assert(liveSw.includes('rainstop-cache-v7'), "Service Worker uses v7 cache");
+  assert(liveSw.includes('rainstop-cache-v8'), "Service Worker uses v8 cache");
   assert(liveSw.includes('skipWaiting'), "Service Worker activates immediately");
   assert(liveSw.includes('fetch(event.request)'), "Service Worker uses Network-First strategy");
   assert(liveSw.includes("request.url.startsWith('http')"), "Service Worker guards against non-http schemes");
-  console.log("  ✅ PWA manifest & Service Worker v7 offline strategy verified.");
+  console.log("  ✅ PWA manifest & Service Worker v8 offline strategy verified.");
 
   console.log("\n==========================================================");
   console.log("🎉 ALL LIVE COMMERCIAL PUBLIC DEPLOYMENT CHECKS PASSED!");

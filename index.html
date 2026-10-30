@@ -28,7 +28,7 @@
   <!-- Leaflet Interactive Map Engine -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=6.1" />
+  <link rel="stylesheet" href="style.css?v=7.0" />
 </head>
 <body class="rain-theme">
   <!-- Offline Network Banner -->
@@ -53,8 +53,8 @@
 
       <!-- Quick Action Controls -->
       <div class="header-controls">
-        <!-- Weather Engine Switcher (Open-Meteo vs Google DeepMind WeatherNext 3) -->
-        <div class="engine-toggle-pill" id="engineTogglePill">
+        <!-- Legacy engine switcher: hidden (the "WeatherNext 3" option never called a real model) -->
+        <div class="engine-toggle-pill" id="engineTogglePill" style="display:none" aria-hidden="true">
           <button class="engine-toggle-btn active" id="btnEngineMeteo" title="Open-Meteo High-Resolution Doppler (Free & Realtime)">
             <span>⚡ Open-Meteo</span>
           </button>
@@ -63,9 +63,9 @@
           </button>
         </div>
 
-        <!-- Live Doppler Status Chip -->
-        <div class="gps-engine-chip" id="gpsEngineChip" title="Live ECMWF & Open-Meteo Doppler Radar Active">
-          <span class="engine-dot">●</span> <span id="engineLabel">Live Doppler Active</span>
+        <!-- Data Source Status Chip -->
+        <div class="gps-engine-chip" id="gpsEngineChip" title="Forecast sources: Open-Meteo models + ensemble, RainViewer radar">
+          <span class="engine-dot">●</span> <span id="engineLabel">Loading forecast…</span>
         </div>
 
         <!-- 🔔 Alert Me When Rain Stops Button -->
@@ -121,7 +121,7 @@
             <div class="lab-card-icon">📍</div>
             <div class="lab-card-body">
               <div class="lab-card-title">Live: IIT Kanpur</div>
-              <div class="lab-card-desc">Real Doppler nowcasting from ECMWF radar</div>
+              <div class="lab-card-desc">Live multi-model forecast + radar for your location</div>
             </div>
           </button>
 
@@ -157,8 +157,8 @@
             </div>
           </button>
 
-          <!-- Google DeepMind WeatherNext 3 Configuration -->
-          <div class="lab-config-card">
+          <!-- Legacy WeatherNext config: hidden (never connected to a real model) -->
+          <div class="lab-config-card" style="display:none" aria-hidden="true">
             <div class="lab-section-title">🧠 GOOGLE DEEPMIND WEATHERNEXT 3</div>
             <p class="lab-config-desc">
               RainStop supports Google DeepMind's WeatherNext 3 neural forecasting model with 0.05° live geostationary satellite mosaics.
@@ -214,7 +214,7 @@
 
           <!-- The Core Question: When will it stop? -->
           <div class="stop-countdown-box">
-            <div class="countdown-caption">WHEN WILL IT STOP?</div>
+            <div class="countdown-caption">WHEN CAN I LEAVE?</div>
             <div class="countdown-timer" id="rainStopTimer">
               <span class="timer-num" id="stopMinutes">18</span>
               <span class="timer-unit">MINUTES</span>
@@ -238,11 +238,11 @@
             </div>
           </div>
 
-          <!-- 🧠 Weather Next 3: Google DeepMind AI Hourly Horizon Strip -->
+          <!-- Next 3 hours: ensemble rain chance (ids kept from older versions) -->
           <div class="weathernext3-box" id="weatherNext3Box">
             <div class="weathernext3-header">
-              <span class="wn3-title">🧠 WEATHER NEXT 3 • AI HORIZON</span>
-              <span class="wn3-badge" id="wn3Badge">DeepMind Neural Ensemble</span>
+              <span class="wn3-title">☔ NEXT 3 HOURS • RAIN CHANCE</span>
+              <span class="wn3-badge" id="wn3Badge">Loading…</span>
             </div>
             <div class="weathernext3-strip" id="weatherNext3Strip">
               <!-- Rendered dynamically by app.js: +1h, +2h, +3h -->
@@ -590,14 +590,18 @@
               <span class="selector-label">DEPARTURE TIMING SCRUBBER</span>
               <span class="scrub-time-val" id="scrubDepartureText">Leave NOW (0 min delay)</span>
             </div>
-            <input type="range" id="departureSlider" min="0" max="45" step="5" value="0" class="time-slider" />
+            <input type="range" id="departureSlider" min="0" max="180" step="5" value="0" class="time-slider" />
             <div class="slider-ticks">
               <span>Now</span>
-              <span>+10m</span>
-              <span>+20m</span>
-              <span>+30m</span>
               <span>+45m</span>
+              <span>+1.5h</span>
+              <span>+2h 15m</span>
+              <span>+3h</span>
             </div>
+            <label class="damp-ok-toggle" title="Counts damp socks / jeans (Tier 2) as acceptable — gives more leave windows">
+              <input type="checkbox" id="toggleDampOk" />
+              <span>Damp socks OK (more leave windows)</span>
+            </label>
           </div>
 
           <!-- Compare Options Bottom Drawer -->
@@ -629,7 +633,7 @@
     <!-- Footer / Status Bar -->
     <footer class="app-footer">
       <div class="footer-left">
-        <span class="pulse-indicator"></span> Real-time Precipitation Doppler Engine • Open-Meteo High-Resolution Nowcast
+        <span class="pulse-indicator"></span> Forecast: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> multi-model + ensemble (CC BY 4.0) • Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>
       </div>
       <div class="footer-right">
         <span>Desktop Companion for Electron</span>
@@ -639,7 +643,7 @@
     <!-- 📱 Mobile 1-Page Action Bar (Zero-scroll primary mobile cockpit) -->
     <div class="mobile-action-dock" id="mobileActionDock">
       <button class="btn-dock-wait" id="btnMobileWait" type="button">
-        <span>⭐ Wait <strong id="mobileWaitMins">18m</strong> (Dry Arrival)</span>
+        <span>⭐ Leave <strong id="mobileWaitMins">Now</strong> (Best Time)</span>
       </button>
       <button class="btn-dock-route" id="btnOpenRouteSheet" type="button">
         <span>🗺️ Route & Map</span>
@@ -657,6 +661,6 @@
     </nav>
   </div>
 
-  <script src="app.js?v=6.1"></script>
+  <script src="app.js?v=7.0"></script>
 </body>
 </html>

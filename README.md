@@ -1,8 +1,8 @@
-# 🌧️ RainStop • Hyperlocal Doppler Weather & Human Soak Simulator
+# 🌧️ RainStop • When Can I Leave? Rain Leave-Time Planner & Human Soak Simulator
 
-> **"Will I get soaked walking right now, or should I wait 15 minutes for 1 chai?"**
+> **"Will I get soaked walking right now, or should I wait for 1 chai — and until when?"**
 
-RainStop is a real-time, zero-watermark, physics-grounded weather nowcaster and commute planner. It answers the one question standard weather apps fail to address: **relatable human wetness consequences**.
+RainStop is a commute planner that tells you **when you can leave** and how wet you'll get. Instead of one weather model's guess, it checks many forecasts over your *whole trip* and gives a departure time with a probability, e.g. **"Leave ~20:10 • 85% chance your 24-min walk stays dry enough"**.
 
 [![Live Public Deployment](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-38bdf8?style=for-the-badge&logo=github)](https://kshtjkumar.github.io/rainstop/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge)](LICENSE)
@@ -22,9 +22,11 @@ RainStop is a real-time, zero-watermark, physics-grounded weather nowcaster and 
 
 ## ✨ Key Features
 
-1. **⏱️ The Chai Rule & 60-Minute Rain Stop Countdown**:
-   - Calculates exact clearance window down to the minute using high-resolution 15-minute Doppler radar profiles.
-   - Tells commuters whether waiting for "1 Chai" (~15–20m) achieves a **Tier 0 Bone Dry** arrival.
+1. **⏱️ When Can I Leave? (leave-time engine)**:
+   - For every departure time over the next 6 hours (5-min steps), checks rain over the whole trip window, not just the moment you step out.
+   - "Dry enough" depends on your mode and gear (car ignores rain; scooter without raincoat tolerates none). Optional **"Damp socks OK"** toggle allows more windows.
+   - Recommends **leave now**, **wait until HH:MM**, or **waiting won't help** — with a probability and a confidence label (models disagree, single model, etc.).
+   - See [How the leave time is computed](#-how-the-leave-time-is-computed).
 
 2. **🧍 Interactive 5-Zone Human Anatomy Visualizer**:
    - Biophysical wetness calculation across 5 independent body zones: **Head & Hair**, **Torso**, **Backpack & Laptop**, **Jeans/Legs**, and **Shoes**.
@@ -35,21 +37,55 @@ RainStop is a real-time, zero-watermark, physics-grounded weather nowcaster and 
    - **🛵 2-Wheeler / Scooter**: Simulates 25–30 km/h wind-driven road spray. Equips full-face motorcycle helmet and enforces raincoat usage (locking out dangerous umbrellas).
    - **🚶 Pedestrian Walk**: Toggles umbrella and raincoat with mutual exclusivity and footwear puddle splash tracking.
 
-4. **🗺️ Dynamic Route Radar & Leaflet Map Engine**:
-   - OpenStreetMap dark tiles with zero external API key requirements.
-   - Along-path precipitation ribbon showing exact rainfall rates at origin, midpoint, and destination.
+4. **🗺️ Route Map with Live Radar**:
+   - OpenStreetMap tiles with zero API keys, plus a toggleable **RainViewer radar** overlay (latest observed frame).
+   - Along-path ribbon: forecast rain (median across models) at the time you pass origin, midpoint and destination. Weather is fetched for the origin point.
    - Photon OpenStreetMap geocoder providing instant autocomplete for any place on Earth.
 
-5. **🛡️ 5-Layer Resilient Weather Nowcasting Architecture**:
-   - **48-Hour Rolling Window (`forecast_days=2`)**: Prevents midnight wrap-around boundaries.
-   - **Epoch Millisecond Alignment**: Accurately synchronizes live weather with the current minute.
-   - **Multi-Signal Consensus Engine**: Cross-references WMO station codes (51–99), high-res 15m radar, and hourly NWP models.
-   - **Background Polling Heartbeat**: Auto-refreshes radar every 2.5 minutes and on screen unlock.
-   - **Sanity Payload Audit**: Rejects contradictory weather states before UI rendering.
+5. **🛡️ Resilient Data Pipeline**:
+   - Four sources load in parallel and fail independently; the app degrades gracefully (see table below).
+   - Unix-time alignment (timezone-proof), forecast cached in localStorage (multi-model 10 min, ensemble 30 min).
+   - Auto-refresh every 2.5 minutes and on screen unlock.
+   - **Rain Here / Dry Here** buttons: your ground report adjusts the next ~30 min only; the forecast still drives the rest.
 
 6. **📱 Progressive Web App (PWA) & Offline Resiliency**:
-   - Service Worker v4 with Network-First caching strategy.
+   - Service Worker (v8) with Network-First caching for app files and map; weather/radar requests are never cached by the service worker.
    - Installable on iOS Safari and Android Chrome as a native standalone app.
+
+---
+
+## 🧮 How the Leave Time Is Computed
+
+**Data sources** (all free, no API keys):
+
+| Source | What | Resolution |
+|---|---|---|
+| [Open-Meteo](https://open-meteo.com/) forecast, 4 models (ECMWF IFS, GFS, ICON, JMA) | Rain timing | 15 min* |
+| [Open-Meteo Ensemble](https://open-meteo.com/en/docs/ensemble-api) (ECMWF 51 + GEFS 31 + ICON-EPS 40 runs) | Uncertainty | 1 hour |
+| [RainViewer](https://www.rainviewer.com/) radar (latest frame, ≤ 20 min old) | Rain observed *right now* | ~1 km |
+| Your **Rain Here / Dry Here** report | Ground truth now | — |
+
+\* Outside Central Europe / North America, Open-Meteo's 15-minute data is interpolated from hourly model output.
+
+**Method**
+1. Trip duration = route distance ÷ mode speed (walk 4.5, scooter 25, car 18 km/h).
+2. Tolerance τ (mm/h) = the highest rain rate the avatar's wetness model keeps at Tier ≤ 1 (or ≤ 2 with *Damp socks OK*) for your mode + gear — so advice and avatar always agree.
+3. For each departure (every 5 min, next 6 h), each model/ensemble run says "OK" if rain stays ≤ τ for the **whole trip** (ensemble hourly means ×1.5 to allow for short bursts).
+4. Probability = ½ × share of the 4 models OK + ½ × average over the 3 ensemble systems (each system weighted equally), lightly smoothed and capped to 3–97%.
+5. Radar echo at your location (or a *Rain Here* report) caps the chance for the next ~30–60 min, fading with time. *No* echo is ignored: radar coverage over India is patchy.
+6. Recommendation: leave now if ≥ 80%; wait for the first ≥ 80% window if it is ≤ 30 min away or improves the chance by ≥ 15 points; otherwise leave now if ≥ 60% ("waiting barely helps"); otherwise best bet / "waiting won't help" with a gear suggestion.
+
+**When sources fail**
+
+| Available | Result |
+|---|---|
+| Models + ensemble | Full blend |
+| Models only | 15-min timing, "no ensemble" note |
+| Ensemble only | Hourly timing, "hourly resolution" note |
+| Single best-match model only | Confidence capped at Low |
+| Nothing | Falls back to "Forecast Unavailable" + manual Rain/Dry buttons |
+
+**Limits**: forecasts in India are hourly-model based; there is no radar nowcast (RainViewer discontinued it); weather is fetched for the start point only; probabilities are model agreement, not calibrated against observations.
 
 ---
 
@@ -58,7 +94,7 @@ RainStop is a real-time, zero-watermark, physics-grounded weather nowcaster and 
 - **Core**: Vanilla HTML5, CSS3 (Obsidian Glassmorphism), and ES6+ JavaScript.
 - **Maps & Routing**: Leaflet.js, OpenStreetMap Carto Tiles, OSRM Routing Engine.
 - **Geocoding**: Photon Geocoder API (Powered by Komoot & OpenStreetMap).
-- **Weather API**: Open-Meteo High-Resolution Global Doppler Radar (ECMWF / DWD ICON).
+- **Weather**: Open-Meteo forecast + ensemble APIs (CC BY 4.0), RainViewer radar tiles (attribution required, non-commercial).
 - **Audio Synthesizer**: Web Audio API (Harmonic C-major chime when rain clears).
 
 ---
@@ -84,8 +120,10 @@ npx serve .
 Run automated unit and physics verification tests:
 
 ```bash
+node test_leave_engine.js   # leave-time engine, failure matrix (offline, mocked APIs)
 node test_rainstop.js
 node test_route.js
+node test_transport_mode.js
 node test_live_verification.js
 ```
 
