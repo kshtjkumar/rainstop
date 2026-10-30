@@ -671,6 +671,13 @@ function renderWeatherNext3(data) {
 // 5. CORE UI UPDATE DISPATCHER
 // ============================================================================
 
+// Short stop-time label. When no dry break exists in the forecast window, stopMinutes is
+// the window length, so show "N+ h" rather than a fake countdown.
+function formatStopShort(data) {
+  if (!data.stopBeyondHorizon) return `${data.stopMinutes}m`;
+  return data.stopMinutes >= 60 ? `${Math.floor(data.stopMinutes / 60)}+ h` : `${data.stopMinutes}+ m`;
+}
+
 function updateUI() {
   const data = appState.currentScenarioData;
   const result = calculateWetnessAndConsequences();
@@ -706,11 +713,16 @@ function updateUI() {
     }
   } else {
     if (countdownCaption) countdownCaption.textContent = "WHEN WILL IT STOP?";
-    document.getElementById('stopMinutes').textContent = data.stopMinutes;
-    if (timerUnit) timerUnit.textContent = "MINUTES";
+    const showHours = data.stopBeyondHorizon && data.stopMinutes >= 60;
+    document.getElementById('stopMinutes').textContent = showHours
+      ? `${Math.floor(data.stopMinutes / 60)}+`
+      : data.stopBeyondHorizon ? `${data.stopMinutes}+` : data.stopMinutes;
+    if (timerUnit) timerUnit.textContent = showHours ? "HOURS" : "MINUTES";
     const stopDate = new Date(now.getTime() + data.stopMinutes * 60000);
     const timeString = stopDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    document.getElementById('stopClockTime').textContent = `Safe to step out at ~${timeString}`;
+    document.getElementById('stopClockTime').textContent = data.stopBeyondHorizon
+      ? `No dry break in forecast window (${formatStopShort(data)})`
+      : `Safe to step out at ~${timeString}`;
     const timelinePct = Math.max(15, Math.min(100, 100 - (data.stopMinutes * 2.5)));
     if (timelineBar) {
       timelineBar.style.width = `${timelinePct}%`;
@@ -718,7 +730,11 @@ function updateUI() {
     }
     if (timelineLabels) {
       const halfMins = Math.round(data.stopMinutes / 2);
-      timelineLabels.innerHTML = `
+      timelineLabels.innerHTML = data.stopBeyondHorizon ? `
+        <span>Now (Rain)</span>
+        <span>No break</span>
+        <span>${formatStopShort(data)} (Still Rain)</span>
+      ` : `
         <span>Now (Rain)</span>
         <span>${halfMins}m (Easing)</span>
         <span>${data.stopMinutes}m (Dry Sky)</span>
@@ -963,7 +979,9 @@ function updateUI() {
     document.getElementById('compNowSub').textContent = `Tier 0: Bone Dry & Crisp`;
   } else {
     const waitDepartureTime = new Date(now.getTime() + data.stopMinutes * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    document.getElementById('compWaitTitle').textContent = `Wait ${data.stopMinutes} mins (Leave ~${waitDepartureTime})`;
+    document.getElementById('compWaitTitle').textContent = data.stopBeyondHorizon
+      ? `No dry break for ${formatStopShort(data)} (waiting won't help)`
+      : `Wait ${data.stopMinutes} mins (Leave ~${waitDepartureTime})`;
     document.getElementById('compNowTitle').textContent = `Leave Now (${nowTimeString})`;
     document.getElementById('compNowSub').textContent = `Tier ${result.tier}: ${result.tierHeadline}`;
   }
@@ -983,7 +1001,7 @@ function updateUI() {
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
         new Notification("RainStop • Sky is Clear! 🌤️", {
-          body: "Overhead precipitation has stopped at IIT Kanpur. Perfect time for your commute!",
+          body: `Overhead precipitation has stopped at ${(appState.origin || DEFAULT_COORDS.name).split(',')[0]}. Perfect time for your commute!`,
           icon: "icon.svg"
         });
       } catch (e) {}
@@ -1003,7 +1021,7 @@ function updateUI() {
 
   if (stripTimer) {
     if (data.stopMinutes > 0) {
-      stripTimer.textContent = `${data.stopMinutes}m to dry`;
+      stripTimer.textContent = data.stopBeyondHorizon ? `No break ${formatStopShort(data)}` : `${data.stopMinutes}m to dry`;
     } else {
       stripTimer.textContent = `Sky is dry`;
     }
@@ -1029,7 +1047,7 @@ function updateUI() {
   // 12. Synchronize 1-Page Mobile Action Dock
   const mobileWaitMins = document.getElementById('mobileWaitMins');
   if (mobileWaitMins) {
-    mobileWaitMins.textContent = data.stopMinutes > 0 ? `${data.stopMinutes}m` : 'Now';
+    mobileWaitMins.textContent = data.stopMinutes > 0 ? formatStopShort(data) : 'Now';
   }
 }
 
@@ -1342,79 +1360,89 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
   try {
     document.getElementById('livePulsingDot').textContent = "● FETCHING LIVE...";
     
-    // Request 48-hour window (forecast_days=2) with hourly temperature & precipitation
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&minutely_15=precipitation,weathercode&hourly=precipitation,windspeed_10m,weathercode,temperature_2m&current_weather=true&forecast_days=2&timezone=auto`;
+    // Request 48-hour window (forecast_days=2). timeformat=unixtime gives UTC epoch seconds,
+    // so slot alignment does not depend on the browser's timezone matching the location's.
+    // NOTE: outside Central Europe / North America, Open-Meteo's minutely_15 data is
+    // interpolated from hourly model output (not radar), so this is a model forecast.
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weather_code,wind_speed_10m&minutely_15=precipitation,weather_code&hourly=precipitation,weather_code,temperature_2m&forecast_days=2&timeformat=unixtime&timezone=auto`;
     const res = await fetchWithTimeout(url, {}, 6500);
     if (!res.ok) throw new Error("API error: " + res.status);
     const json = await res.json();
 
-    // 1. Precise Epoch Timestamp Alignment
-    const nowTimeStr = json.current_weather ? json.current_weather.time : null;
-    const nowMs = nowTimeStr ? new Date(nowTimeStr).getTime() : Date.now();
-    const wcode = json.current_weather ? json.current_weather.weathercode : 0;
-    const wind = json.current_weather ? json.current_weather.windspeed : 10;
-    const temp = json.current_weather ? json.current_weather.temperature : 26;
+    const cur = json.current || {};
+    const wcode = Number(cur.weather_code) || 0;
+    const wind = cur.wind_speed_10m !== undefined ? cur.wind_speed_10m : 10;
+    const temp = cur.temperature_2m !== undefined ? cur.temperature_2m : 26;
+    const nowSec = Date.now() / 1000;
 
-    // Find mathematically closest interval to current minute
-    let startIndex = 0;
-    if (json.minutely_15 && Array.isArray(json.minutely_15.time)) {
-      let minDiff = Infinity;
-      json.minutely_15.time.forEach((tStr, idx) => {
-        const tMs = new Date(tStr).getTime();
-        const diff = Math.abs(tMs - nowMs);
-        if (diff < minDiff) {
-          minDiff = diff;
-          startIndex = idx;
-        }
-      });
+    // 1. Timestamp alignment. Open-Meteo precipitation at time T is the SUM over the
+    // preceding 15 minutes (T-15m → T), in mm. The slot covering "now" is the first one
+    // whose end time is >= now. Multiply by 4 to convert mm/15min → mm/h.
+    const m15 = json.minutely_15 || {};
+    const m15Time = Array.isArray(m15.time) ? m15.time : [];
+    const m15Precip = Array.isArray(m15.precipitation) ? m15.precipitation : [];
+    const m15Codes = Array.isArray(m15.weather_code) ? m15.weather_code : [];
+    const startIndex = m15Time.findIndex(t => t >= nowSec);
+
+    // Usable series = from "now" up to the first missing (null) value. A null is the end
+    // of the data, not a dry slot.
+    const slotRates = [];
+    const slotTimes = [];
+    if (startIndex !== -1) {
+      for (let k = startIndex; k < m15Time.length; k++) {
+        const p = m15Precip[k];
+        if (p === null || p === undefined || !Number.isFinite(Number(p))) break;
+        slotRates.push(Math.max(0, Number(p)) * 4);
+        slotTimes.push(m15Time[k]);
+      }
     }
+    // Without a 15-minute series we can't say when rain stops — treat as a failed fetch
+    // (falls back to a recent cached forecast) instead of guessing.
+    if (!slotRates.length) throw new Error("No usable minutely_15 precipitation data");
 
-    const minutelyPrecip = json.minutely_15 && json.minutely_15.precipitation 
-      ? json.minutely_15.precipitation.slice(startIndex, startIndex + 12) 
-      : [0,0,0,0,0,0,0,0,0,0,0,0];
-    const minutelyCodes = json.minutely_15 && json.minutely_15.weathercode 
-      ? json.minutely_15.weathercode.slice(startIndex, startIndex + 12) 
-      : [];
+    // 2. Is it raining now? Precipitation is reported in 0.1 mm steps, so any non-zero
+    // value (>= 0.4 mm/h) is real rain/drizzle. Rate is the only wet test, so the stop
+    // time, chart profile and wetness engine always agree.
+    const isWetSlot = (i) => slotRates[i] > 0;
+    const isRainingNow = isWetSlot(0);
+    const currentPrecip = slotRates[0];
 
-    // Extract Next 3-Hour AI Horizon Data
-    const currentHourIdx = Math.floor(startIndex / 4);
-    const hourlyPrecipSlice = (json.hourly && Array.isArray(json.hourly.precipitation)) 
-      ? [json.hourly.precipitation[currentHourIdx + 1] || 0, json.hourly.precipitation[currentHourIdx + 2] || 0, json.hourly.precipitation[currentHourIdx + 3] || 0]
-      : [0, 0, 0];
-    const hourlyWcodeSlice = (json.hourly && Array.isArray(json.hourly.weathercode))
-      ? [json.hourly.weathercode[currentHourIdx + 1] || 0, json.hourly.weathercode[currentHourIdx + 2] || 0, json.hourly.weathercode[currentHourIdx + 3] || 0]
-      : [0, 0, 0];
-    const hourlyTempSlice = (json.hourly && Array.isArray(json.hourly.temperature_2m))
-      ? [json.hourly.temperature_2m[currentHourIdx + 1] || temp, json.hourly.temperature_2m[currentHourIdx + 2] || temp, json.hourly.temperature_2m[currentHourIdx + 3] || temp]
-      : [temp, temp, temp];
-
-    // 2. Multi-Signal Meteorological Consensus (WMO Code + Radar Rain Rate + Hourly Model)
-    // WMO Weather Codes for precipitation:
-    // 51, 53, 55: Drizzle (light, moderate, dense)
-    // 56, 57: Freezing Drizzle
-    // 61, 63, 65: Rain (slight, moderate, heavy)
-    // 66, 67: Freezing Rain
-    // 80, 81, 82: Rain showers (slight, moderate, violent)
-    // 95, 96, 99: Thunderstorm
-    const isWmoRain = (wcode >= 51 && wcode <= 67) || (wcode >= 80 && wcode <= 99);
-    
-    // 2. Physical Precipitation Consensus:
-    // A regional WMO code indicates atmospheric conditions (e.g. thunderstorm or rain clouds somewhere in the 10km grid cell).
-    // But whether it is raining ON THE GROUND at the user's location depends on the radar precipitation rate.
-    const radarRainRate = (minutelyPrecip && minutelyPrecip[0] !== undefined) ? Number(minutelyPrecip[0]) : 0;
-    
-    // An active rain shower requires measurable precipitation (> 0.1 mm/h)
-    const isRainingNow = radarRainRate > 0.1;
-    const currentPrecip = isRainingNow ? radarRainRate : 0.0;
-
-    // 3. Dynamic Stop-Minutes Calculation
+    // 3. When does it stop? First future slot that is dry; stop time = START of that slot.
     let stopMins = 0;
+    let stopBeyondHorizon = false;
     if (isRainingNow) {
-      const stopIdx = minutelyPrecip.findIndex((p, i) => i > 0 && p < 0.1);
-      stopMins = stopIdx !== -1 ? stopIdx * 15 : 45; // Persistent cell
-    } else {
-      stopMins = 0;
+      const dryIdx = slotRates.findIndex((_, i) => i > 0 && !isWetSlot(i));
+      if (dryIdx !== -1) {
+        const dryStartSec = slotTimes[dryIdx] - 900;
+        stopMins = Math.max(1, Math.round((dryStartSec - nowSec) / 60));
+      } else {
+        // No dry slot in the whole forecast window — don't invent a number.
+        stopBeyondHorizon = true;
+        const lastSec = slotTimes[slotTimes.length - 1];
+        stopMins = Math.max(1, Math.round((lastSec - nowSec) / 60));
+      }
     }
+
+    // 4. 60-minute profile in 5-minute buckets (what the chart, slider and wetness engine
+    // expect). Each bucket takes the slot that contains its midpoint in real time, since
+    // slot 0 can end anywhere 0-15 min after now.
+    const minutelyPrecip = [];
+    for (let i = 0; i < 12; i++) {
+      const tMid = nowSec + i * 300 + 150;
+      const k = slotTimes.findIndex(t => t >= tMid);
+      minutelyPrecip.push(k !== -1 ? +slotRates[k].toFixed(1) : 0);
+    }
+
+    // Next 3-hour horizon. Hourly precipitation at time T = sum over (T-1h, T].
+    const hourly = json.hourly || {};
+    const hTime = Array.isArray(hourly.time) ? hourly.time : [];
+    const hourlyAt = (arr, offsetH, fallback) => {
+      const idx = hTime.findIndex(t => t >= nowSec + offsetH * 3600);
+      return (idx !== -1 && Array.isArray(arr) && arr[idx] !== undefined && arr[idx] !== null) ? arr[idx] : fallback;
+    };
+    const hourlyPrecipSlice = [1, 2, 3].map(h => hourlyAt(hourly.precipitation, h, 0));
+    const hourlyWcodeSlice = [1, 2, 3].map(h => hourlyAt(hourly.weather_code, h, 0));
+    const hourlyTempSlice = [1, 2, 3].map(h => hourlyAt(hourly.temperature_2m, h, temp));
 
     // 4. Condition Headline & Icon
     let conditionTitle = "Clear Sky / Dry";
@@ -1460,26 +1488,35 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
         : [currentPrecip, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       windSpeed: Math.round(wind),
       puddleRisk: currentPrecip > 4 ? "High (4-6 cm)" : currentPrecip > 1 ? "Moderate (2-3 cm)" : "Dry (< 1 cm)",
-      rainIntensity: currentPrecip > 5 ? 'heavy' : currentPrecip > 0.3 ? 'light' : 'dry_now',
+      rainIntensity: !isRainingNow ? 'dry_now' : currentPrecip > 7.6 ? 'heavy' : currentPrecip > 2.5 ? 'moderate' : 'light',
       lightning: (wcode >= 95 && isRainingNow) || currentPrecip > 8,
-      adviceHeadline: stopMins > 0 ? `Rain easing in ~${stopMins} mins (Wait 1 Chai)` : `100% Clear Skies at ${placeName.split(',')[0]}`,
-      adviceDesc: stopMins > 0 
-        ? `Live Doppler nowcast detects active precipitation (${currentPrecip.toFixed(1)} mm/h). Stepping out now without gear will soak clothes. Rain clears in ~${stopMins} mins.` 
-        : `Zero precipitation detected over ${placeName.split(',')[0]}. Perfect weather to step out.`,
+      adviceHeadline: stopBeyondHorizon
+        ? `No dry break forecast for ${formatStopShort({ stopBeyondHorizon: true, stopMinutes: stopMins })}`
+        : stopMins > 0 ? `Rain easing in ~${stopMins} mins (Wait 1 Chai)` : `100% Clear Skies at ${placeName.split(',')[0]}`,
+      adviceDesc: stopBeyondHorizon
+        ? `Forecast model shows continuous precipitation (${currentPrecip.toFixed(1)} mm/h now) through the whole forecast window. Waiting won't help — take gear or a cab.`
+        : stopMins > 0
+        ? `Forecast model shows active precipitation (${currentPrecip.toFixed(1)} mm/h). Stepping out now without gear will get you wet. Rain expected to clear in ~${stopMins} mins.`
+        : `No precipitation forecast over ${placeName.split(',')[0]} right now. Good time to step out.`,
       routePockets: [
         { name: "Origin Point", dist: "0.0 km", rain: currentPrecip > 4 ? "heavy" : currentPrecip > 0.3 ? "light" : "dry", text: `${currentPrecip.toFixed(1)} mm/h` },
         { name: "Mid Route", dist: `${(appState.routeDistanceKm * 0.5).toFixed(1)} km`, rain: currentPrecip > 2 ? "moderate" : currentPrecip > 0.3 ? "light" : "dry", text: `${(currentPrecip * 0.7).toFixed(1)} mm/h` },
         { name: "Destination", dist: `${appState.routeDistanceKm.toFixed(1)} km`, rain: stopMins > 30 ? "light" : "dry", text: stopMins > 30 ? "0.5 mm/h" : "0 mm/h" }
       ],
-      routeAlert: isRainingNow 
-        ? `⚠️ Live Doppler alert: Active rain cell (${currentPrecip.toFixed(1)} mm/h) over travel route.` 
+      routeAlert: isRainingNow
+        ? `⚠️ Forecast alert: Active precipitation (${currentPrecip.toFixed(1)} mm/h) over travel route.`
         : `🟢 Clear skies detected along travel route.`,
       hourlyPrecip: hourlyPrecipSlice,
       hourlyWcode: hourlyWcodeSlice,
-      hourlyTemp: hourlyTempSlice
+      hourlyTemp: hourlyTempSlice,
+      stopBeyondHorizon
     };
 
-    // If user previously confirmed "Dry Here" ground truth, lock dry state
+    // If user confirmed "Dry Here" ground truth in the last 30 minutes, lock dry state.
+    // After that, trust the forecast again (otherwise one tap locks the app to "dry" forever).
+    if (appState.userOverrodeDry && Date.now() - (appState.dryOverrideAt || 0) > 30 * 60000) {
+      appState.userOverrodeDry = false;
+    }
     if (appState.userOverrodeDry) {
       payload.skyTitle = "Clear Sky (Ground Confirmed)";
       payload.skySubtitle = `📍 ${placeName} (${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E) • ${temp}°C • 100% Bone Dry`;
@@ -1499,7 +1536,7 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     SCENARIOS.live = validated;
     lastSuccessfulFetchTime = Date.now();
 
-    localStorage.setItem('rainstop_cached_forecast_v2', JSON.stringify({
+    localStorage.setItem('rainstop_cached_forecast_v3', JSON.stringify({
       timestamp: Date.now(),
       data: validated
     }));
@@ -1512,14 +1549,26 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     updateUI();
   } catch (err) {
     console.warn("Live weather fetch failed, attempting cached fallback:", err);
-    const rawCached = localStorage.getItem('rainstop_cached_forecast_v2') || localStorage.getItem('rainstop_cached_forecast');
+    // v3 key: older caches stored mm/15min values in 15-minute buckets — never reuse them.
+    const rawCached = localStorage.getItem('rainstop_cached_forecast_v3');
     if (rawCached) {
       try {
         const parsed = JSON.parse(rawCached);
-        const data = parsed.data || parsed;
+        const data = parsed.data;
         const cacheAgeMins = parsed.timestamp ? Math.round((Date.now() - parsed.timestamp) / 60000) : 999;
-        
-        if (cacheAgeMins < 120) {
+
+        if (data && cacheAgeMins < 30) {
+          // stopMinutes and rainProfile are relative to fetch time — age them to "now".
+          if (data.stopMinutes > 0) {
+            data.stopMinutes = data.stopBeyondHorizon
+              ? Math.max(1, data.stopMinutes - cacheAgeMins)
+              : Math.max(0, data.stopMinutes - cacheAgeMins);
+          }
+          if (Array.isArray(data.rainProfile) && data.rainProfile.length) {
+            const shift = Math.min(data.rainProfile.length - 1, Math.floor(cacheAgeMins / 5));
+            const last = data.rainProfile[data.rainProfile.length - 1];
+            data.rainProfile = data.rainProfile.slice(shift).concat(Array(shift).fill(last));
+          }
           SCENARIOS.live = validateForecastPayload(data);
           appState.currentScenarioData = SCENARIOS.live;
           document.getElementById('livePulsingDot').textContent = `● CACHED (${cacheAgeMins}m ago)`;
@@ -1527,6 +1576,16 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
           return;
         }
       } catch (e) { /* ignore */ }
+    }
+    // No fresh or recent data: don't keep showing a "dry" default as if it were a forecast.
+    if (appState.activeScenario === 'live') {
+      SCENARIOS.live.skyTitle = "Forecast Unavailable";
+      SCENARIOS.live.skySubtitle = "Couldn't load weather data — retrying automatically";
+      SCENARIOS.live.skyIcon = "❔";
+      SCENARIOS.live.adviceHeadline = "No live data — check the sky yourself";
+      SCENARIOS.live.adviceDesc = "Weather data could not be loaded. Use the Rain Here / Dry Here buttons to set conditions manually.";
+      appState.currentScenarioData = SCENARIOS.live;
+      updateUI();
     }
     document.getElementById('livePulsingDot').textContent = "● OFFLINE FALLBACK";
   }
@@ -1765,7 +1824,9 @@ function setupEventListeners() {
       const shareUrl = `${window.location.origin}${window.location.pathname}?lat=${appState.originCoords.lat.toFixed(4)}&lon=${appState.originCoords.lon.toFixed(4)}&q=${encodeURIComponent(originName)}`;
       
       const shareText = `🌧️ RainStop Forecast for ${originName}:\n` +
-        `⏱️ Rain easing in: ${data.stopMinutes} mins\n` +
+        (data.stopBeyondHorizon
+          ? `⏱️ No dry break forecast for ${formatStopShort(data)}\n`
+          : `⏱️ Rain easing in: ${data.stopMinutes} mins\n`) +
         `🚶 Commute: ${originName} ➔ ${destName} (${appState.routeDistanceKm} km)\n` +
         `👕 Outcome: Tier ${res.tier} - ${res.tierHeadline}\n` +
         `🛡️ Gear: ${appState.gear.umbrella ? '🌂 Umbrella' : appState.gear.raincoat ? '🧥 Raincoat' : 'No Gear'}\n` +
@@ -1946,6 +2007,7 @@ function setupEventListeners() {
   if (btnReportDry) {
     btnReportDry.addEventListener('click', () => {
       appState.userOverrodeDry = true;
+      appState.dryOverrideAt = Date.now();
       SCENARIOS.live.skyTitle = "Clear Sky (Ground Confirmed)";
       SCENARIOS.live.skySubtitle = "0.0 mm/h • 100% Bone Dry Outdoors";
       SCENARIOS.live.skyIcon = "☀️";
