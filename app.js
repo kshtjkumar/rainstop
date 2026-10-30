@@ -336,10 +336,8 @@ let originMarker = null;
 let destMarker = null;
 let routeLineLayer = null;
 let osmBaseLayer = null;   // desktop basemap (dark-filtered in CSS)
-let cartoBaseLayer = null; // phone basemap (natively dark, no CSS filter)
 
 const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-const CARTO_DARK_TILES = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 
 function createCustomPin(color, label) {
   return L.divIcon({
@@ -380,7 +378,7 @@ function initInteractiveMap() {
   ensureMapPanes(); // weather overlay panes must exist before any overlay is created
 
   // 100% Free Official OpenStreetMap Tiles (Zero Watermarks • No Key Required).
-  // Phones swap this for the CARTO dark basemap in setBaseLayer().
+  // Same free tiles on phones and desktop (dark look via CSS filter on the tile pane).
   osmBaseLayer = L.tileLayer(OSM_TILES, {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19
@@ -2830,23 +2828,11 @@ function addMapLayer(layer) {
   if (mapInstance && layer && !mapInstance.hasLayer(layer)) layer.addTo(mapInstance);
 }
 
-// Phones: CARTO dark basemap (no CSS filter). Desktop: OSM with the existing dark filter.
+// OSM base map on phones and desktop, darkened by the CSS filter on the tile pane.
+// (CARTO's dark tiles were tried for phones but now require an API key.)
 function setBaseLayer(mobile) {
   if (!mapInstance || typeof L === 'undefined') return;
-  if (mobile) {
-    if (!cartoBaseLayer) {
-      cartoBaseLayer = L.tileLayer(CARTO_DARK_TILES, {
-        subdomains: 'abcd',
-        maxZoom: 19,
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'
-      });
-    }
-    removeMapLayer(osmBaseLayer);
-    addMapLayer(cartoBaseLayer);
-  } else {
-    removeMapLayer(cartoBaseLayer);
-    addMapLayer(osmBaseLayer);
-  }
+  addMapLayer(osmBaseLayer);
 }
 
 // One tile layer per radar frame, created lazily (opacity 0 = preloaded but hidden).

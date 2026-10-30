@@ -2775,10 +2775,6 @@ body.rain-theme {
     box-shadow: none;
     background: var(--m-map-bg);
   }
-  /* CARTO dark tiles are already dark: no invert filter on phones */
-  body.m-map .route-map-canvas .leaflet-tile-pane {
-    filter: none;
-  }
   /* Attribution sits just above the sheet */
   body.m-map .map-stage .leaflet-bottom {
     bottom: calc(var(--sheet-visible, 148px) + 8px);

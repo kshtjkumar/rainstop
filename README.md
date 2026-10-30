@@ -38,7 +38,7 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
    - **🚶 Pedestrian Walk**: Toggles umbrella and raincoat with mutual exclusivity and footwear puddle splash tracking.
 
 4. **🗺️ Map-First Phone Layout + Rain Map**:
-   - **Phones (≤ 768 px)**: full-screen dark map (CARTO dark basemap) with a **draggable bottom sheet** (peek → half → full). The peek shows when to leave; drag up for conditions, advice, trip and avatar. Map taps don't move the A/B pins on phones (drag the pins or use the Trip inputs); the **Trip** button fits the route.
+   - **Phones (≤ 768 px)**: full-screen dark map (OpenStreetMap, darkened) with a **draggable bottom sheet** (peek → half → full). The peek shows when to leave; drag up for conditions, advice, trip and avatar. Map taps don't move the A/B pins on phones (drag the pins or use the Trip inputs); the **Trip** button fits the route.
    - **Radar loop**: the last ~2 h of RainViewer frames (−2 h … now) with play/scrub, on phones and under the desktop map.
    - **Forecast model map (experimental)**: +1 … +6 h hourly rain from a 7 × 7 Open-Meteo grid (~13 km spacing, model resolution ~10–25 km), continuing the same timeline and always labelled **FORECAST MODEL**, never radar.
    - **Satellite IR clouds** (NASA GIBS, JMA Himawari, ~1–2 h old) as an optional layer.
@@ -81,7 +81,6 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
 | RainViewer radar frames | Map loop, last ~2 h (13 × 10 min) | 5 min |
 | Open-Meteo forecast grid (49 points, one request) | Experimental forecast rain map, +1 … +6 h | 30 min (cached 45 min) |
 | [NASA GIBS](https://earthdata.nasa.gov/gibs) Himawari AHI band 13 | Satellite IR clouds, ~1–2 h old | on view |
-| [CARTO](https://carto.com/attributions) dark basemap (© OpenStreetMap contributors) | Phone basemap | on view |
 
 \* Outside Central Europe / North America, Open-Meteo's 15-minute data is interpolated from hourly model output.
 

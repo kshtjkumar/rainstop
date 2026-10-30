@@ -3,7 +3,7 @@
  * Network-first strategy: Always fetch live freshest assets; fall back to cache when offline.
  */
 
-const CACHE_NAME = 'rainstop-cache-v10';
+const CACHE_NAME = 'rainstop-cache-v11';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -41,7 +41,7 @@ self.addEventListener('fetch', (event) => {
   // left to the browser's HTTP cache. (The app keeps its own short-lived forecast cache
   // in localStorage.)
   const host = new URL(event.request.url).hostname;
-  if (/(^|\.)open-meteo\.com$|(^|\.)rainviewer\.com$|(^|\.)gibs\.earthdata\.nasa\.gov$|(^|\.)tile\.openstreetmap\.org$|(^|\.)basemaps\.cartocdn\.com$/.test(host)) return;
+  if (/(^|\.)open-meteo\.com$|(^|\.)rainviewer\.com$|(^|\.)gibs\.earthdata\.nasa\.gov$|(^|\.)tile\.openstreetmap\.org$/.test(host)) return;
   // Always try Network First for everything to prevent stale code or old times
   event.respondWith(
     fetch(event.request)
