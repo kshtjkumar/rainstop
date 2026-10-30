@@ -30,6 +30,13 @@
   --radius-lg: 16px;
   --radius-md: 12px;
   --radius-sm: 8px;
+
+  /* Map-first phone layout (dark radar aesthetic) */
+  --m-map-bg: #05080f;
+  --m-surface: #0b1220;
+  --m-surface-2: #111a2c;
+  --m-line: rgba(148, 163, 184, 0.12);
+  --m-scrim: rgba(6, 11, 20, 0.92);
 }
 
 * {
@@ -1102,9 +1109,10 @@ body.rain-theme {
   font-weight: 600;
 }
 
-/* Interactive Leaflet Map */
+/* Interactive Leaflet Map (+ radar timeline row underneath) */
 .interactive-map-section {
   display: flex;
+  flex-direction: column;
   position: relative;
   width: 100%;
   margin-top: 4px;
@@ -1824,6 +1832,277 @@ body.rain-theme {
   100% { filter: drop-shadow(0 0 14px rgba(239, 68, 68, 0.95)); }
 }
 
+/* ==========================================================================
+   Rain map timeline, layer toggles, conditions card (desktop + phone)
+   ========================================================================== */
+
+/* Phone-only shell: hidden until app.js sets body.m-map */
+.map-stage,
+.m-topbar,
+.m-map-controls,
+.m-layers-panel,
+.m-sheet {
+  display: none;
+}
+
+/* Radar / forecast timeline — compact row under the desktop map */
+.rs-timeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 34px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: rgba(11, 18, 32, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+}
+
+.rs-play {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--primary-cyan);
+  font-size: 10px;
+  cursor: pointer;
+}
+.rs-play.is-playing {
+  background: rgba(56, 189, 248, 0.25);
+}
+.rs-play:focus-visible,
+.rs-slider:focus-visible {
+  outline: 2px solid var(--primary-cyan);
+  outline-offset: 2px;
+}
+
+.rs-slider {
+  flex: 1 1 120px;
+  min-width: 80px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--primary-cyan);
+  cursor: pointer;
+}
+
+.rs-time-label {
+  font-size: 10.5px;
+  color: var(--text-main);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.rs-source-tag {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.rs-source-tag.is-radar {
+  color: var(--tier-0);
+  background: rgba(16, 185, 129, 0.12);
+}
+.rs-source-tag.is-model {
+  color: var(--tier-2);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.rs-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rs-legend-bar {
+  display: block;
+  width: 56px;
+  height: 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.rs-legend-text {
+  font-size: 9px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.rs-timeline:not(.rs-empty) .rs-legend-text {
+  display: none;
+}
+.rs-timeline.rs-empty .rs-play,
+.rs-timeline.rs-empty .rs-slider,
+.rs-timeline.rs-empty .rs-time-label,
+.rs-timeline.rs-empty .rs-source-tag {
+  display: none;
+}
+
+/* Layer toggles: desktop Leaflet control + phone panel share the rows */
+.rs-layer-control {
+  background: rgba(11, 18, 32, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+}
+.rs-layer-btn {
+  background: none;
+  border: 0;
+  color: var(--primary-cyan);
+  font: 600 11px var(--font-sans);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.rs-layer-panel {
+  width: 220px;
+  padding: 0 4px 4px;
+}
+.rs-layer-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rs-layer-row:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.rs-layer-row input {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  flex-shrink: 0;
+  accent-color: var(--primary-cyan);
+}
+.rs-layer-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rs-layer-title {
+  font: 600 13px/1.2 var(--font-sans);
+  color: var(--text-main);
+}
+.rs-layer-sub {
+  font: 500 10px/1.3 var(--font-mono);
+  color: var(--text-dim);
+}
+
+/* Conditions card: compact 3-column metrics + 12-hour chart */
+.metrics-card {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.metrics-card .card-header {
+  margin-bottom: 0;
+}
+.metrics-updated {
+  font: 500 10px var(--font-mono);
+  color: var(--text-dim);
+}
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+}
+.metric-label {
+  font: 500 9px/1.2 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.metric-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 700 16px/1.2 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+.metric-arrow {
+  display: inline-block;
+  color: var(--primary-cyan);
+  font-size: 0.9em;
+}
+.metric-sub {
+  font: 400 10.5px/1.3 var(--font-sans);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.metric-card.tone-ok .metric-value { color: var(--tier-0); }
+.metric-card.tone-warn .metric-value { color: var(--tier-2); }
+.metric-card.tone-bad .metric-value { color: var(--tier-3); }
+.metric-card.is-next .metric-label { color: var(--primary-cyan); }
+
+.metrics-note {
+  grid-column: 1 / -1;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.metrics-card.is-sim .hourly-chart-wrap {
+  display: none;
+}
+.hourly-chart {
+  margin-top: 6px;
+}
+.hourly-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.hourly-empty {
+  padding: 8px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.hc-axis { stroke: rgba(148, 163, 184, 0.25); stroke-width: 1; }
+.hc-mm { font: 500 8px var(--font-mono); fill: var(--text-muted); }
+.hc-temp { stroke: #fbbf24; stroke-width: 1.5; }
+.hc-temp-dot { fill: #fbbf24; }
+.hc-temp-label { font: 600 9px var(--font-mono); fill: #fde68a; }
+.hc-tick { font: 500 9px var(--font-mono); fill: var(--text-dim); }
+
+/* One-shot entrance on the first real metrics fill (never repeats) */
+.rs-rise {
+  animation: rsRise 240ms ease-out 1 both;
+}
+@keyframes rsRise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
 /* Mobile Navigation & Sheet Elements (Hidden by default on Desktop) */
 .sheet-handle-bar,
 .mobile-action-dock,
@@ -2437,9 +2716,459 @@ body.rain-theme {
   }
 }
 
+/* ==========================================================================
+   MAP-FIRST MOBILE (phones <= 768px, body.m-map set by app.js)
+   Full-screen radar map + draggable bottom sheet. Solid surfaces only: no
+   backdrop blur, no looping animations, only the sheet is transformed.
+   !important is used only to beat the older mobile rules above.
+   ========================================================================== */
+@media (max-width: 768px) {
+  html.m-map {
+    overflow: hidden !important;
+    height: 100% !important;
+    overscroll-behavior: none;
+  }
+
+  body.m-map {
+    height: 100vh !important;
+    height: 100dvh !important;
+    overflow: hidden !important;
+    overscroll-behavior: none;
+    background: var(--m-map-bg);
+  }
+
+  /* Old phone chrome, rain canvas and the in-card map are replaced by the shell */
+  body.m-map #rainCanvas,
+  body.m-map #lightning,
+  body.m-map .app-header,
+  body.m-map #mobileActionDock,
+  body.m-map #routeSheetBackdrop,
+  body.m-map .sheet-handle-bar,
+  body.m-map .interactive-map-section,
+  body.m-map .mobile-quick-strip,
+  body.m-map .leaflet-control-zoom,
+  body.m-map .rs-layer-control {
+    display: none !important;
+  }
+
+  body.m-map .app-container {
+    display: block !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    max-width: none;
+  }
+
+  /* Map stage */
+  body.m-map .map-stage {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    background: var(--m-map-bg);
+  }
+  body.m-map .map-stage .route-map-canvas {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--m-map-bg);
+  }
+  /* CARTO dark tiles are already dark: no invert filter on phones */
+  body.m-map .route-map-canvas .leaflet-tile-pane {
+    filter: none;
+  }
+  /* Attribution sits just above the sheet */
+  body.m-map .map-stage .leaflet-bottom {
+    bottom: calc(var(--sheet-visible, 148px) + 8px);
+  }
+
+  /* Top bar */
+  body.m-map .m-topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: fixed;
+    z-index: 20;
+    top: calc(var(--safe-top) + 8px);
+    left: 12px;
+    right: 12px;
+    min-height: 52px;
+    padding: 4px 4px 4px 16px;
+    background: var(--m-scrim);
+    border: 1px solid var(--m-line);
+    border-radius: 26px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  }
+  body.m-map .m-place-wrap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  body.m-map .m-place {
+    font: 600 15px/1.2 var(--font-sans);
+    color: var(--text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  body.m-map .m-temp {
+    font: 700 15px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  body.m-map .m-status {
+    flex-shrink: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--m-line);
+    border-radius: 999px;
+    font: 500 10px/1 var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--tier-0);
+  }
+  body.m-map .m-status[data-tone="wet"] {
+    color: var(--primary-cyan);
+    border-color: rgba(56, 189, 248, 0.4);
+  }
+  body.m-map .m-status[data-tone="sim"] {
+    color: var(--tier-2);
+  }
+
+  /* 44px round controls */
+  body.m-map .m-icon-btn {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: 22px;
+    border: 1px solid var(--m-line);
+    background: var(--m-scrim);
+    color: var(--text-main);
+    cursor: pointer;
+  }
+  body.m-map .m-topbar .m-icon-btn {
+    background: var(--m-surface-2);
+  }
+  body.m-map .m-btn-text {
+    width: auto;
+    padding: 0 14px;
+    font: 600 13px var(--font-sans);
+  }
+  body.m-map .m-icon-btn:active {
+    background: var(--m-surface-2);
+  }
+  body.m-map .m-icon-btn[aria-expanded="true"] {
+    color: var(--primary-cyan);
+    border-color: rgba(56, 189, 248, 0.45);
+  }
+  body.m-map .m-icon-btn:focus-visible,
+  body.m-map .m-sheet-handle:focus-visible,
+  body.m-map .m-peek:focus-visible {
+    outline: 2px solid var(--primary-cyan);
+    outline-offset: 2px;
+  }
+
+  body.m-map .m-map-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    z-index: 20;
+    right: 12px;
+    top: calc(var(--safe-top) + 72px);
+  }
+  body.m-map .m-layers-panel:not([hidden]) {
+    display: block;
+    position: fixed;
+    z-index: 21;
+    right: 64px;
+    top: calc(var(--safe-top) + 72px);
+    width: min(260px, calc(100vw - 88px));
+    padding: 4px;
+    background: var(--m-scrim);
+    border: 1px solid var(--m-line);
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Bottom sheet (height + position set by app.js) */
+  body.m-map .m-sheet {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    z-index: 30;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: calc(100dvh - var(--safe-top) - 64px);
+    transform: translate3d(0, calc(100% - 148px - var(--safe-bottom)), 0);
+    background: var(--m-surface);
+    border-top: 1px solid var(--m-line);
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
+    color: var(--text-main);
+    transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    will-change: transform;
+  }
+  body.m-map .m-sheet.dragging {
+    transition: none;
+  }
+
+  body.m-map .m-sheet-head {
+    flex-shrink: 0;
+    padding: 0 16px 4px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.m-map .m-sheet-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+  body.m-map .m-sheet-handle span {
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(148, 163, 184, 0.45);
+  }
+
+  body.m-map .m-peek {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 56px;
+    cursor: pointer;
+  }
+  body.m-map .m-peek-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    flex-shrink: 0;
+    min-width: 92px;
+  }
+  body.m-map .m-peek-leave {
+    font: 700 44px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: var(--tier-0);
+  }
+  body.m-map .m-peek[data-tone="fair"] .m-peek-leave { color: var(--tier-2); }
+  body.m-map .m-peek[data-tone="poor"] .m-peek-leave { color: var(--tier-3); }
+  body.m-map .m-peek-unit {
+    margin-top: 2px;
+    font: 500 10px/1.2 var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  body.m-map .m-peek-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  body.m-map .m-peek-line {
+    font: 500 13px/1.45 var(--font-sans);
+    color: var(--text-main);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  body.m-map .m-peek-sky {
+    font: 400 12px/1.3 var(--font-sans);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Timeline inside the sheet: [play | slider] [play | time · source] [legend] */
+  body.m-map .m-sheet .rs-timeline {
+    touch-action: none; /* swipe on the row drags the sheet; the slider keeps its own gesture */
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "play slider slider"
+      "play label tag"
+      "legend legend legend";
+    gap: 2px 10px;
+    align-items: center;
+    min-height: 0;
+    margin: 0;
+    padding: 4px 16px 6px;
+    background: none;
+    border: 0;
+    border-top: 1px solid var(--m-line);
+    border-radius: 0;
+  }
+  body.m-map .m-sheet .rs-play {
+    grid-area: play;
+    width: 44px;
+    height: 44px;
+    font-size: 13px;
+  }
+  body.m-map .m-sheet .rs-slider {
+    grid-area: slider;
+    height: 28px;
+    min-width: 0;
+  }
+  body.m-map .m-sheet .rs-time-label {
+    grid-area: label;
+    font-size: 11px;
+  }
+  body.m-map .m-sheet .rs-source-tag {
+    grid-area: tag;
+    justify-self: end;
+    max-width: 58vw;
+  }
+  body.m-map .m-sheet .rs-legend {
+    grid-area: legend;
+  }
+  body.m-map .m-sheet .rs-legend-bar {
+    width: 96px;
+  }
+  body.m-map .m-sheet .rs-timeline .rs-legend-text {
+    display: inline;
+  }
+  body.m-map .m-sheet .rs-timeline.rs-empty {
+    grid-template-areas: "legend legend legend";
+  }
+
+  /* Sheet content: scroll only when fully open */
+  body.m-map .m-sheet-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    touch-action: none;
+    padding: 4px 12px calc(var(--safe-bottom) + 20px);
+  }
+  body.m-map .m-sheet[data-snap="full"] .m-sheet-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+  body.m-map .m-actions-row .header-controls {
+    touch-action: pan-x;
+    padding: 4px 0 10px !important;
+  }
+  body.m-map .m-sheet[data-snap="full"] .m-actions-row .header-controls {
+    touch-action: pan-x pan-y;
+  }
+  body.m-map .header-controls .btn-icon,
+  body.m-map .header-controls .gps-engine-chip {
+    min-height: 40px !important;
+    border-radius: 20px !important;
+  }
+
+  /* In-sheet order: status → conditions → advice → trip → avatar */
+  body.m-map .cockpit-grid {
+    gap: 10px !important;
+  }
+  body.m-map #colRadar {
+    order: 1 !important;
+    gap: 10px !important;
+  }
+  body.m-map #colRoute {
+    order: 2 !important;
+    display: block !important;
+    position: static !important;
+    transform: none !important;
+    max-height: none !important;
+    width: auto !important;
+    z-index: auto !important;
+    padding: 0 !important;
+    background: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    transition: none !important;
+  }
+  body.m-map #colAvatar {
+    order: 3 !important;
+  }
+  body.m-map .glass-card {
+    background: var(--m-surface-2) !important;
+    border: 1px solid var(--m-line) !important;
+    border-radius: 14px !important;
+    box-shadow: none !important;
+  }
+  body.m-map #metricsCard .card-header {
+    display: flex !important;
+  }
+  body.m-map .metrics-card {
+    padding: 12px !important;
+  }
+  body.m-map .metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  body.m-map .metric-card {
+    padding: 10px 12px;
+    background: var(--m-surface);
+    border: 1px solid var(--m-line);
+    border-radius: 12px;
+  }
+  body.m-map .metric-label {
+    font-size: 10px;
+  }
+  body.m-map .metric-value {
+    font-size: 22px;
+  }
+  body.m-map .metric-sub {
+    font: 400 12px/1.45 var(--font-sans);
+  }
+  body.m-map .app-footer {
+    flex-direction: column;
+    gap: 6px;
+    text-align: center;
+    padding: 14px 4px 0 !important;
+  }
+
+  /* Header buttons + footer now live in the sheet: stop their looping pulses */
+  body.m-map .live-dot,
+  body.m-map .engine-dot,
+  body.m-map .pwa-install-btn,
+  body.m-map .btn-alert.active,
+  body.m-map .pulse-indicator {
+    animation: none !important;
+  }
+
+  /* Toasts drop from under the top bar, clear of the sheet */
+  body.m-map .toast-container {
+    top: calc(var(--safe-top) + 72px) !important;
+    bottom: auto !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+@media (max-width: 768px) {
+  body.m-map .m-sheet .rs-timeline input[type="range"] {
+    touch-action: pan-x;
   }
 }

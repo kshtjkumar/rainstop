@@ -37,19 +37,28 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
    - **🛵 2-Wheeler / Scooter**: Simulates 25–30 km/h wind-driven road spray. Equips full-face motorcycle helmet and enforces raincoat usage (locking out dangerous umbrellas).
    - **🚶 Pedestrian Walk**: Toggles umbrella and raincoat with mutual exclusivity and footwear puddle splash tracking.
 
-4. **🗺️ Route Map with Live Radar**:
-   - OpenStreetMap tiles with zero API keys, plus a toggleable **RainViewer radar** overlay (latest observed frame).
+4. **🗺️ Map-First Phone Layout + Rain Map**:
+   - **Phones (≤ 768 px)**: full-screen dark map (CARTO dark basemap) with a **draggable bottom sheet** (peek → half → full). The peek shows when to leave; drag up for conditions, advice, trip and avatar. Map taps don't move the A/B pins on phones (drag the pins or use the Trip inputs); the **Trip** button fits the route.
+   - **Radar loop**: the last ~2 h of RainViewer frames (−2 h … now) with play/scrub, on phones and under the desktop map.
+   - **Forecast model map (experimental)**: +1 … +6 h hourly rain from a 7 × 7 Open-Meteo grid (~13 km spacing, model resolution ~10–25 km), continuing the same timeline and always labelled **FORECAST MODEL**, never radar.
+   - **Satellite IR clouds** (NASA GIBS, JMA Himawari, ~1–2 h old) as an optional layer.
+   - **Layer toggles**: radar, forecast rain, satellite clouds, trip route (remembered per browser).
+   - Desktop keeps OpenStreetMap tiles with the dark filter; overlays sit in their own map panes so the filter never recolours radar.
    - Along-path ribbon: forecast rain (median across models) at the time you pass origin, midpoint and destination. Weather is fetched for the origin point.
    - Photon OpenStreetMap geocoder providing instant autocomplete for any place on Earth.
 
-5. **🛡️ Resilient Data Pipeline**:
+5. **🌡️ Conditions Card**:
+   - Feels-like (+ actual) temperature, rain chance + amount for the next hour, wind with compass direction and gusts, humidity, UV now/max with level, cloud cover, sunrise/sunset (next one highlighted) and radar status.
+   - **Next 12 hours chart**: rain chance bars (coloured by amount) with a temperature line.
+
+6. **🛡️ Resilient Data Pipeline**:
    - Four sources load in parallel and fail independently; the app degrades gracefully (see table below).
    - Unix-time alignment (timezone-proof), forecast cached in localStorage (multi-model 10 min, ensemble 30 min).
    - Auto-refresh every 2.5 minutes and on screen unlock.
    - **Rain Here / Dry Here** buttons: your ground report adjusts the next ~30 min only; the forecast still drives the rest.
 
-6. **📱 Progressive Web App (PWA) & Offline Resiliency**:
-   - Service Worker (v8) with Network-First caching for app files and map; weather/radar requests are never cached by the service worker.
+7. **📱 Progressive Web App (PWA) & Offline Resiliency**:
+   - Service Worker (v10) with Network-First caching for app files; weather, radar, satellite and map tiles are never cached by the service worker.
    - Installable on iOS Safari and Android Chrome as a native standalone app.
 
 ---
@@ -64,6 +73,15 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
 | [Open-Meteo Ensemble](https://open-meteo.com/en/docs/ensemble-api) (ECMWF 51 + GEFS 31 + ICON-EPS 40 runs) | Uncertainty | 1 hour |
 | [RainViewer](https://www.rainviewer.com/) radar (latest frame, ≤ 20 min old) | Rain observed *right now* | ~1 km |
 | Your **Rain Here / Dry Here** report | Ground truth now | — |
+
+**Map-only sources** (not used by the leave-time maths):
+
+| Source | What | Refresh |
+|---|---|---|
+| RainViewer radar frames | Map loop, last ~2 h (13 × 10 min) | 5 min |
+| Open-Meteo forecast grid (49 points, one request) | Experimental forecast rain map, +1 … +6 h | 30 min (cached 45 min) |
+| [NASA GIBS](https://earthdata.nasa.gov/gibs) Himawari AHI band 13 | Satellite IR clouds, ~1–2 h old | on view |
+| [CARTO](https://carto.com/attributions) dark basemap (© OpenStreetMap contributors) | Phone basemap | on view |
 
 \* Outside Central Europe / North America, Open-Meteo's 15-minute data is interpolated from hourly model output.
 
@@ -85,7 +103,7 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
 | Single best-match model only | Confidence capped at Low |
 | Nothing | Falls back to "Forecast Unavailable" + manual Rain/Dry buttons |
 
-**Limits**: forecasts in India are hourly-model based; there is no radar nowcast (RainViewer discontinued it); weather is fetched for the start point only; probabilities are model agreement, not calibrated against observations.
+**Limits**: forecasts in India are hourly-model based; there is no radar nowcast (RainViewer discontinued it); weather is fetched for the start point only; probabilities are model agreement, not calibrated against observations. The forecast rain map is a coarse **model** field (not radar) and its colours are approximate; satellite clouds are ~1–2 h old.
 
 ---
 
@@ -121,6 +139,7 @@ Run automated unit and physics verification tests:
 
 ```bash
 node test_leave_engine.js   # leave-time engine, failure matrix (offline, mocked APIs)
+node test_map_layers.js     # rain map timeline, forecast grid, metrics, chart, sheet snapping
 node test_rainstop.js
 node test_route.js
 node test_transport_mode.js

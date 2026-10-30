@@ -28,7 +28,7 @@
   <!-- Leaflet Interactive Map Engine -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=7.1" />
+  <link rel="stylesheet" href="style.css?v=8.0" />
 </head>
 <body class="rain-theme">
   <!-- Offline Network Banner -->
@@ -247,6 +247,21 @@
             <div class="weathernext3-strip" id="weatherNext3Strip">
               <!-- Rendered dynamically by app.js: +1h, +2h, +3h -->
             </div>
+          </div>
+        </div>
+
+        <!-- Live conditions: feels like, wind, humidity, UV, cloud, sun, radar + 12-h chart -->
+        <div class="glass-card metrics-card" id="metricsCard">
+          <div class="card-header">
+            <span class="section-label">CONDITIONS NOW</span>
+            <span class="metrics-updated" id="metricsUpdated">Loading…</span>
+          </div>
+          <div class="metrics-grid" id="metricsGrid">
+            <!-- Rendered by app.js (renderMetrics) -->
+          </div>
+          <div class="hourly-chart-wrap">
+            <div class="trend-title">Next 12 hours • rain chance &amp; temperature</div>
+            <div class="hourly-chart" id="hourlyChart"></div>
           </div>
         </div>
 
@@ -633,7 +648,7 @@
     <!-- Footer / Status Bar -->
     <footer class="app-footer">
       <div class="footer-left">
-        <span class="pulse-indicator"></span> Forecast: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> multi-model + ensemble (CC BY 4.0) • Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>
+        <span class="pulse-indicator"></span> Forecast: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> multi-model + ensemble (CC BY 4.0) • Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a> • Satellite: <a href="https://earthdata.nasa.gov/gibs" target="_blank" rel="noopener">NASA GIBS</a> / JMA Himawari • Map: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>
       </div>
       <div class="footer-right">
         <span>Desktop Companion for Electron</span>
@@ -659,8 +674,54 @@
       <button class="mobile-tab-btn" data-target="colAvatar">Avatar</button>
       <button class="mobile-tab-btn" data-target="colRoute">Route</button>
     </nav>
+
+    <!-- MAP-FIRST PHONE SHELL (hidden on desktop). On phones app.js moves #routeMap into
+         #mapStage and the cockpit + header buttons + footer into the bottom sheet. -->
+    <div class="map-stage" id="mapStage" aria-label="Rain map"></div>
+
+    <div class="m-topbar" id="mTopBar">
+      <div class="m-place-wrap">
+        <span class="m-place" id="mPlace">Locating…</span>
+        <span class="m-temp" id="mTemp">–</span>
+      </div>
+      <span class="m-status" id="mStatus" data-tone="live">LIVE</span>
+      <button class="m-icon-btn" id="mBtnGps" type="button" aria-label="Use my location" title="Use my location">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 2 4.5 20.3l.7.7L12 18l6.8 3 .7-.7z" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="m-map-controls" id="mMapControls">
+      <button class="m-icon-btn" id="mBtnLayers" type="button" aria-label="Map layers" title="Map layers" aria-expanded="false" aria-controls="mLayersPanel">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5zM2 12l10 5 10-5M2 16l10 5 10-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="m-icon-btn" id="mBtnRecenter" type="button" aria-label="Center on my start point" title="Center on start point">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" stroke="currentColor" stroke-width="1.8"/></svg>
+      </button>
+      <button class="m-icon-btn m-btn-text" id="mBtnRoute" type="button" aria-label="Show trip route" title="Show trip route">Trip</button>
+    </div>
+
+    <div class="m-layers-panel" id="mLayersPanel" role="group" aria-label="Map layers" hidden></div>
+
+    <section class="m-sheet" id="mSheet" data-snap="peek" aria-label="Leave-time planner">
+      <div class="m-sheet-head" id="mSheetHead">
+        <button class="m-sheet-handle" id="mSheetHandle" type="button" aria-label="Expand planner" aria-expanded="false"><span></span></button>
+        <div class="m-peek" id="mPeek" role="button" tabindex="0" aria-label="Open leave-time details">
+          <div class="m-peek-hero">
+            <span class="m-peek-leave" id="mPeekLeave">…</span>
+            <span class="m-peek-unit" id="mPeekUnit">CHECKING</span>
+          </div>
+          <div class="m-peek-text">
+            <span class="m-peek-line" id="mPeekLine">Loading forecast…</span>
+            <span class="m-peek-sky" id="mPeekSky"></span>
+          </div>
+        </div>
+      </div>
+      <div class="m-sheet-scroll" id="mSheetScroll">
+        <div class="m-actions-row" id="mActionsRow"></div>
+      </div>
+    </section>
   </div>
 
-  <script src="app.js?v=7.1"></script>
+  <script src="app.js?v=8.0"></script>
 </body>
 </html>

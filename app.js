@@ -163,8 +163,29 @@ const appState = {
   forecastBundle: null,    // { lat, lon, a0, det, detAt, ens, ensAt } — see fetchForecastExtras
   leavePlan: null,         // output of computeLeavePlan, recomputed on every updateUI
   radar: null,             // { status: 'echo'|'none'|'unavailable'|'stale', frameTime, nearby }
+  radarMeta: null,         // { host, frame, frames: [{time, path}] (last ~2 h), ageMin } from RainViewer
+  metrics: null,           // output of parseMetrics (+ lat/lon) — live conditions, never part of SCENARIOS
+  grid: null,              // output of parseGridResponse (+ key, dataUrls) — experimental forecast rain map
+  gridFailed: false,
+  mapFocus: 'route',       // 'route' = fit the trip on redraw | 'radar' = keep the radar view (phones)
+  layers: (() => {
+    const defaults = { radar: true, satellite: false, grid: true, route: true };
+    try {
+      const saved = JSON.parse(localStorage.getItem('rainstop_layers_v1') || 'null');
+      if (saved && typeof saved === 'object') {
+        Object.keys(defaults).forEach(k => { if (typeof saved[k] === 'boolean') defaults[k] = saved[k]; });
+      }
+    } catch (e) { /* private mode / corrupt value: use defaults */ }
+    return defaults;
+  })(),
   dampOk: (() => { try { return localStorage.getItem('rainstop_damp_ok') === '1'; } catch (e) { return false; } })()
 };
+
+// True while the phone "map-first" layout is active (body.m-map). Safe in test sandboxes
+// that have no document.body.
+function isMobileMap() {
+  return !!(document.body && document.body.classList && document.body.classList.contains('m-map'));
+}
 
 // ============================================================================
 // 2. CANVAS PARTICLE RAIN SYSTEM
@@ -181,8 +202,15 @@ class RainEngine {
     this.intensity = 'light';
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    // The draw loop stops while hidden / empty (no idle rAF); resume when visible again.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.start(); });
     this.initDrops();
-    this.animate();
+    this.start();
+  }
+
+  start() {
+    if (this.rafId) return;
+    this.rafId = requestAnimationFrame(() => { this.rafId = null; this.animate(); });
   }
 
   resize() {
@@ -211,12 +239,14 @@ class RainEngine {
     else if (level === 'light') drops = 80;
     // Phones: far fewer drops (full-screen redraw every frame is costly); none at all
     // if the user asked the OS to reduce motion.
+    // The map-first phone layout hides the canvas entirely, so draw nothing there.
     const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduceMotion) drops = 0;
+    if (reduceMotion || isMobileMap()) drops = 0;
     else if (this.width <= 768) drops = Math.round(drops * 0.3);
     if (drops === this.maxDrops && this.drops.length === drops) return; // unchanged
     this.maxDrops = drops;
     this.initDrops();
+    this.start();
   }
 
   initDrops() {
@@ -244,13 +274,12 @@ class RainEngine {
   }
 
   animate() {
-    // Skip drawing while the app is in the background or there is nothing to draw.
+    // Nothing to draw (or app in the background): clear once and stop the loop entirely
+    // instead of spinning requestAnimationFrame; start() resumes it.
     if (document.hidden || (this.drops.length === 0 && this.splashes.length === 0)) {
-      if (!this.cleared) { this.ctx.clearRect(0, 0, this.width, this.height); this.cleared = true; }
-      requestAnimationFrame(() => this.animate());
+      this.ctx.clearRect(0, 0, this.width, this.height);
       return;
     }
-    this.cleared = false;
     this.ctx.clearRect(0, 0, this.width, this.height);
 
     this.ctx.lineWidth = 1.5;
@@ -294,7 +323,7 @@ class RainEngine {
       }
     }
 
-    requestAnimationFrame(() => this.animate());
+    this.start();
   }
 }
 
@@ -306,6 +335,11 @@ let mapInstance = null;
 let originMarker = null;
 let destMarker = null;
 let routeLineLayer = null;
+let osmBaseLayer = null;   // desktop basemap (dark-filtered in CSS)
+let cartoBaseLayer = null; // phone basemap (natively dark, no CSS filter)
+
+const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const CARTO_DARK_TILES = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 
 function createCustomPin(color, label) {
   return L.divIcon({
@@ -343,9 +377,11 @@ function initInteractiveMap() {
   });
 
   L.control.zoom({ position: 'bottomright' }).addTo(mapInstance);
+  ensureMapPanes(); // weather overlay panes must exist before any overlay is created
 
-  // 100% Free Official OpenStreetMap Tiles (Zero Watermarks • No Key Required)
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  // 100% Free Official OpenStreetMap Tiles (Zero Watermarks • No Key Required).
+  // Phones swap this for the CARTO dark basemap in setBaseLayer().
+  osmBaseLayer = L.tileLayer(OSM_TILES, {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19
   }).addTo(mapInstance);
@@ -379,8 +415,10 @@ function initInteractiveMap() {
     fetchAndDrawRoute();
   });
 
-  // Map Click Listener: automatically moves the closer pin
+  // Map Click Listener: automatically moves the closer pin. Not on the phone map, where
+  // taps are for panning/zooming the radar (pins can still be dragged).
   mapInstance.on('click', async (e) => {
+    if (isMobileMap()) return;
     const { lat, lng } = e.latlng;
     const distToOrig = haversineDistance(lat, lng, appState.originCoords.lat, appState.originCoords.lon);
     const distToDest = haversineDistance(lat, lng, appState.destCoords.lat, appState.destCoords.lon);
@@ -424,7 +462,7 @@ async function fetchAndDrawRoute() {
         mapInstance.removeLayer(routeLineLayer);
       }
 
-      // Draw glowing cyan route line
+      // Draw glowing cyan route line (kept off the map while the "Trip route" layer is off)
       routeLineLayer = L.geoJSON(route.geometry, {
         style: {
           color: '#38bdf8',
@@ -432,11 +470,11 @@ async function fetchAndDrawRoute() {
           opacity: 0.9,
           dashArray: '2, 6'
         }
-      }).addTo(mapInstance);
+      });
+      if (appState.layers.route) routeLineLayer.addTo(mapInstance);
 
-      if (mapInstance) {
-        mapInstance.fitBounds(routeLineLayer.getBounds(), { padding: [30, 30] });
-      }
+      // On the phone radar view the map stays put; "Trip" fits the route on demand.
+      if (appState.mapFocus !== 'radar') fitRouteBounds();
     } else {
       drawFallbackRoute();
     }
@@ -462,9 +500,19 @@ function drawFallbackRoute() {
       color: '#38bdf8',
       weight: 4,
       opacity: 0.8
-    }).addTo(mapInstance);
-    mapInstance.fitBounds(routeLineLayer.getBounds(), { padding: [30, 30] });
+    });
+    if (appState.layers.route) routeLineLayer.addTo(mapInstance);
+    if (appState.mapFocus !== 'radar') fitRouteBounds();
   }
+}
+
+// Fit the trip into view. On phones keep it clear of the top bar and the bottom sheet.
+function fitRouteBounds() {
+  if (!mapInstance || !routeLineLayer || typeof routeLineLayer.getBounds !== 'function') return;
+  const opts = isMobileMap()
+    ? { paddingTopLeft: [24, 84], paddingBottomRight: [24, (sheetState.visible || 160) + 24] }
+    : { padding: [30, 30] };
+  mapInstance.fitBounds(routeLineLayer.getBounds(), opts);
 }
 
 function haversineDistance(lat1, lon1, lat2, lon2) {
@@ -1638,6 +1686,10 @@ function updateUI() {
     if (plan) mobileWaitMins.textContent = planTarget(plan).offsetMin === 0 ? 'Now' : clockIn(planTarget(plan).offsetMin);
     else mobileWaitMins.textContent = data.stopMinutes > 0 ? formatStopShort(data) : 'Now';
   }
+
+  // 13. Conditions card (+ phone top bar) and the map-first sheet's peek summary
+  renderMetrics();
+  renderMobileSummary(plan, nowView);
 }
 
 // ============================================================================
@@ -2005,13 +2057,18 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     // so slot alignment does not depend on the browser's timezone matching the location's.
     // NOTE: outside Central Europe / North America, Open-Meteo's minutely_15 data is
     // interpolated from hourly model output (not radar), so this is a model forecast.
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weather_code,wind_speed_10m&minutely_15=precipitation,weather_code&hourly=precipitation,weather_code,temperature_2m&forecast_days=2&timeformat=unixtime&timezone=auto`;
+    // The extra current/hourly/daily fields feed the conditions card (parseMetrics).
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weather_code,wind_speed_10m,apparent_temperature,relative_humidity_2m,wind_gusts_10m,wind_direction_10m,uv_index,cloud_cover,is_day&minutely_15=precipitation,weather_code&hourly=precipitation,weather_code,temperature_2m,precipitation_probability&daily=sunrise,sunset,uv_index_max&forecast_days=2&timeformat=unixtime&timezone=auto`;
     const res = await fetchWithTimeout(url, {}, 6500);
     if (!res.ok) throw new Error("API error: " + res.status);
     const json = await res.json();
     // Drop responses for a location the user has already moved away from (e.g. cached
     // location fetch finishing after the GPS fix) — they would clobber the newer data.
     if (!sameSpot(appState.originCoords, { lat, lon })) return;
+
+    const metrics = parseMetrics(json);
+    if (metrics) { metrics.lat = lat; metrics.lon = lon; }
+    appState.metrics = metrics;
 
     const cur = json.current || {};
     const wcode = Number(cur.weather_code) || 0;
@@ -2171,7 +2228,8 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
       localStorage.setItem('rainstop_cached_forecast_v3', JSON.stringify({
         timestamp: Date.now(),
         lat, lon,
-        data: validated
+        data: validated,
+        metrics: appState.metrics
       }));
     } catch (e) { /* storage full / private mode: cache is optional */ }
 
@@ -2204,6 +2262,7 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
             data.rainProfile = data.rainProfile.slice(shift).concat(Array(shift).fill(last));
           }
           SCENARIOS.live = validateForecastPayload(data);
+          if (parsed.metrics && typeof parsed.metrics === 'object') appState.metrics = parsed.metrics;
           if (appState.activeScenario !== 'live') return;
           appState.currentScenarioData = SCENARIOS.live;
           document.getElementById('livePulsingDot').textContent = `● CACHED (${cacheAgeMins}m ago)`;
@@ -2332,6 +2391,8 @@ async function fetchForecastExtras(lat, lon) {
   if (!appState.radar || !appState.radar.fetchedAt || now - appState.radar.fetchedAt > RADAR_TTL_MS || !sameSpot(appState.radar, { lat, lon })) {
     jobs.push(refreshRadar(lat, lon).catch(err => console.warn('Radar refresh failed:', err)));
   }
+  // Experimental forecast rain map (no-op without a map / when the layer is off; 30-min TTL)
+  jobs.push(refreshForecastGrid().catch(err => console.warn('Forecast grid refresh failed:', err)));
   await Promise.all(jobs);
 }
 
@@ -2340,10 +2401,7 @@ async function fetchForecastExtras(lat, lon) {
 // Radar coverage over India is patchy, so NO echo is never treated as "dry".
 // ---------------------------------------------------------------------------
 
-let radarLayer = null;
-let radarControl = null;
-let radarLabelEl = null;
-let radarVisible = true;
+const RADAR_FRAME_COUNT = 13; // ~2 h of 10-min frames for the map loop
 
 function latLonToTilePixel(lat, lon, z) {
   const n = Math.pow(2, z);
@@ -2360,7 +2418,9 @@ async function fetchRadarMeta() {
   const past = json.radar && Array.isArray(json.radar.past) ? json.radar.past : [];
   if (!json.host || !past.length) throw new Error('RainViewer: no frames');
   const frame = past[past.length - 1];
-  return { host: json.host, frame, ageMin: Math.round((Date.now() / 1000 - frame.time) / 60) };
+  // `frame` (latest) drives the "rain here" sample; `frames` drives the map loop.
+  const frames = past.slice(-RADAR_FRAME_COUNT).filter(f => f && Number.isFinite(f.time) && typeof f.path === 'string');
+  return { host: json.host, frame, frames, ageMin: Math.round((Date.now() / 1000 - frame.time) / 60) };
 }
 
 function sampleRadarAt(lat, lon, meta) {
@@ -2397,46 +2457,11 @@ function sampleRadarAt(lat, lon, meta) {
   });
 }
 
+// Entry point for a fresh RainViewer frame list (refreshRadar calls it): keeps the radar
+// frame layers and the map timeline in sync without interrupting playback.
 function updateRadarOverlay(meta) {
-  if (!mapInstance || typeof L === 'undefined') return;
-  if (radarLayer) mapInstance.removeLayer(radarLayer);
-  radarLayer = L.tileLayer(`${meta.host}${meta.frame.path}/256/{z}/{x}/{y}/2/1_1.png`, {
-    opacity: 0.55,
-    maxNativeZoom: 7,
-    maxZoom: 19,
-    zIndex: 300,
-    attribution: 'Radar © <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>'
-  });
-  if (radarVisible) radarLayer.addTo(mapInstance);
-
-  if (!radarControl) {
-    radarControl = L.control({ position: 'topright' });
-    radarControl.onAdd = () => {
-      const div = L.DomUtil.create('div', 'radar-toggle-control');
-      div.style.cssText = 'background:rgba(15,23,42,0.85);color:#e2e8f0;padding:4px 8px;border-radius:8px;font:12px Inter,sans-serif;';
-      const label = document.createElement('label');
-      label.style.cursor = 'pointer';
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.checked = radarVisible;
-      radarLabelEl = document.createElement('span');
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(' '));
-      label.appendChild(radarLabelEl);
-      div.appendChild(label);
-      L.DomEvent.disableClickPropagation(div);
-      box.addEventListener('change', (e) => {
-        radarVisible = e.target.checked;
-        if (radarLayer) {
-          if (radarVisible) radarLayer.addTo(mapInstance);
-          else mapInstance.removeLayer(radarLayer);
-        }
-      });
-      return div;
-    };
-    radarControl.addTo(mapInstance);
-  }
-  if (radarLabelEl) radarLabelEl.textContent = `Radar ${fmtClock(new Date(meta.frame.time * 1000))} (${meta.ageMin} min old)`;
+  appState.radarMeta = meta;
+  syncRadarFrames();
 }
 
 async function refreshRadar(lat, lon) {
@@ -2453,6 +2478,1330 @@ async function refreshRadar(lat, lon) {
   if (!sameSpot(appState.forecastBundle, { lat, lon })) return; // location changed meanwhile
   appState.radar = { ...sample, frameTime: meta.frame.time, ageMin: meta.ageMin, fetchedAt: Date.now(), lat, lon };
   updateUI();
+}
+
+// ============================================================================
+// 8.6 RAIN MAP: RADAR LOOP + FORECAST-MODEL GRID + LAYERS (pure helpers first)
+// ============================================================================
+// One timeline: the last ~2 h of RainViewer radar frames, then up to 6 hourly frames of
+// an experimental Open-Meteo forecast grid. Radar coverage over India is patchy and the
+// grid is a coarse model (~10–25 km), so it is labelled "FORECAST MODEL", never radar.
+
+const GRID_N = 7;                 // 7 × 7 = 49 forecast points
+const GRID_STEP = 0.12;           // degrees between points (~13 km)
+const GRID_TTL_MS = 30 * 60000;   // refetch at most every 30 min
+const GRID_CACHE_MAX_MS = 45 * 60000;
+const GRID_CACHE_KEY = 'rainstop_grid_v1';
+const GRID_MAX_HOURS = 6;
+const LAYERS_KEY = 'rainstop_layers_v1';
+const RADAR_OPACITY = 0.6;
+const RADAR_ATTRIBUTION = 'Radar © <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>';
+const GIBS_IR_TILES = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Himawari_AHI_Band13_Clean_Infrared/default/default/GoogleMapsCompatible_Level6/{z}/{y}/{x}.png';
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Rain-rate colour scale (mm/h → rgba). Drives the grid image, the hourly chart bars and
+// the legend so they always agree. Below 0.1 mm/h is transparent.
+const RAIN_SCALE = [
+  { mm: 0.1, rgb: [125, 211, 252], a: 0.35 },
+  { mm: 1, rgb: [56, 189, 248], a: 0.5 },
+  { mm: 2.5, rgb: [37, 99, 235], a: 0.6 },
+  { mm: 4, rgb: [34, 197, 94], a: 0.65 },
+  { mm: 8, rgb: [250, 204, 21], a: 0.7 },
+  { mm: 16, rgb: [249, 115, 22], a: 0.75 },
+  { mm: 30, rgb: [220, 38, 38], a: 0.8 },
+  { mm: 50, rgb: [217, 70, 239], a: 0.85 }
+];
+
+function rainColor(mmh) {
+  const v = Number(mmh);
+  if (!Number.isFinite(v) || v < RAIN_SCALE[0].mm) return [0, 0, 0, 0];
+  const last = RAIN_SCALE[RAIN_SCALE.length - 1];
+  if (v >= last.mm) return [...last.rgb, last.a];
+  let i = 0;
+  while (v >= RAIN_SCALE[i + 1].mm) i++;
+  const lo = RAIN_SCALE[i], hi = RAIN_SCALE[i + 1];
+  const f = (v - lo.mm) / (hi.mm - lo.mm);
+  const mix = (x, y) => Math.round(x + (y - x) * f);
+  return [mix(lo.rgb[0], hi.rgb[0]), mix(lo.rgb[1], hi.rgb[1]), mix(lo.rgb[2], hi.rgb[2]), +(lo.a + (hi.a - lo.a) * f).toFixed(3)];
+}
+
+// Legend gradient (opaque so it reads on any map).
+function rainLegendGradient() {
+  const n = RAIN_SCALE.length - 1;
+  return `linear-gradient(90deg, ${RAIN_SCALE.map((s, i) => `rgb(${s.rgb.join(',')}) ${Math.round(i / n * 100)}%`).join(', ')})`;
+}
+
+// 7 × 7 lattice centred on the start point snapped to the 0.12° grid (so nearby spots
+// share one cache entry). Rows run north → south, columns west → east.
+function buildGridPoints(lat, lon, n = GRID_N, step = GRID_STEP) {
+  const snap = v => +(Math.round(v / step) * step).toFixed(4);
+  const lat0 = snap(lat);
+  const lon0 = snap(lon);
+  const half = (n - 1) / 2;
+  const points = [];
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      points.push({ lat: +(lat0 + (half - row) * step).toFixed(4), lon: +(lon0 + (col - half) * step).toFixed(4), row, col });
+    }
+  }
+  return { lat0, lon0, step, n, points };
+}
+
+// Open-Meteo multi-location response → hourly rain grids. `spec` is buildGridPoints()
+// output. Hourly precipitation at T is the total over (T-1h, T]; only hours ending after
+// `nowSec` are kept (max 6). Missing values become NaN (drawn transparent).
+function parseGridResponse(json, spec, nowSec = Date.now() / 1000) {
+  const list = Array.isArray(json) ? json : [json];
+  if (!spec || !Array.isArray(spec.points) || list.length !== spec.points.length) {
+    throw new Error(`grid: expected ${spec && spec.points ? spec.points.length : '?'} points, got ${list.length}`);
+  }
+  const first = list[0] && list[0].hourly;
+  if (!first || !Array.isArray(first.time)) throw new Error('grid: no time axis');
+  const hourIdx = [];
+  first.time.forEach((t, i) => { if (Number(t) > nowSec && hourIdx.length < GRID_MAX_HOURS) hourIdx.push(i); });
+  const val = (arr, i) => {
+    const v = Array.isArray(arr) ? arr[i] : null;
+    return (v === null || v === undefined || !Number.isFinite(Number(v))) ? NaN : Number(v);
+  };
+  const precip = hourIdx.map(i => list.map(p => val(p && p.hourly && p.hourly.precipitation, i)));
+  const prob = hourIdx.map(i => list.map(p => val(p && p.hourly && p.hourly.precipitation_probability, i)));
+  return {
+    lat0: spec.lat0, lon0: spec.lon0, step: spec.step, n: spec.n,
+    times: hourIdx.map(i => Number(first.time[i])),
+    precip, prob, fetchedAt: Date.now()
+  };
+}
+
+// Merge radar frames (past) and model hours (future) into one ordered timeline.
+// Default position = the latest radar frame ("now"); without radar, the first model hour.
+function buildTimelineFrames(radarMeta, grid, nowSec = Date.now() / 1000) {
+  const frames = [];
+  const radar = radarMeta && Array.isArray(radarMeta.frames) ? radarMeta.frames.filter(f => f && Number.isFinite(f.time)) : [];
+  const lastRadarT = radar.length ? Math.max(...radar.map(f => f.time)) : -Infinity;
+  radar.forEach(f => {
+    const ago = Math.round((lastRadarT - f.time) / 60);
+    frames.push({ kind: 'radar', t: f.time, path: f.path, label: fmtClock(new Date(f.time * 1000)), rel: ago <= 0 ? 'now' : `−${ago} min` });
+  });
+  if (grid && Array.isArray(grid.times)) {
+    let added = 0;
+    grid.times.forEach((t, hourIdx) => {
+      if (added >= GRID_MAX_HOURS || !(t > lastRadarT) || !(t > nowSec)) return;
+      added++;
+      const h = Math.max(1, Math.round((t - nowSec) / 3600));
+      frames.push({ kind: 'model', t, hourIdx, label: fmtClock(new Date(t * 1000)), rel: `+${h} h` });
+    });
+  }
+  frames.sort((a, b) => a.t - b.t);
+  let defaultIndex = -1;
+  frames.forEach((f, i) => { if (f.kind === 'radar') defaultIndex = i; });
+  if (defaultIndex === -1 && frames.length) defaultIndex = 0;
+  return { frames, defaultIndex };
+}
+
+// ---------------------------------------------------------------------------
+// Live conditions (feels like, wind, UV, sun, hourly chance) from the main A0 response.
+// ---------------------------------------------------------------------------
+
+function parseMetrics(json, nowSec = Date.now() / 1000) {
+  if (!json || typeof json !== 'object') return null;
+  const num = v => (v === null || v === undefined || v === '' || typeof v === 'boolean' || !Number.isFinite(Number(v))) ? null : Number(v);
+  const at = (arr, i) => (Array.isArray(arr) && i < arr.length ? num(arr[i]) : null);
+  const obj = o => (o && typeof o === 'object' ? o : {});
+  const cur = obj(json.current);
+  const daily = obj(json.daily);
+  const hourly = obj(json.hourly);
+  const hTime = Array.isArray(hourly.time) ? hourly.time : [];
+  // Hour ending after now = the hour in progress (values cover (T-1h, T]).
+  const start = hTime.findIndex(t => Number(t) > nowSec);
+  const hours = [];
+  if (start !== -1) {
+    for (let i = start; i < hTime.length && hours.length < 12; i++) {
+      hours.push({
+        t: Number(hTime[i]),
+        mm: at(hourly.precipitation, i),
+        prob: at(hourly.precipitation_probability, i),
+        tempC: at(hourly.temperature_2m, i),
+        code: at(hourly.weather_code, i)
+      });
+    }
+  }
+  const isDay = num(cur.is_day);
+  return {
+    at: num(cur.time),
+    tempC: num(cur.temperature_2m),
+    feelsC: num(cur.apparent_temperature),
+    humidity: num(cur.relative_humidity_2m),
+    windKmh: num(cur.wind_speed_10m),
+    gustKmh: num(cur.wind_gusts_10m),
+    windDirDeg: num(cur.wind_direction_10m), // direction the wind blows FROM
+    uv: num(cur.uv_index),
+    uvMax: at(daily.uv_index_max, 0),
+    cloudPct: num(cur.cloud_cover),
+    isDay: isDay === null ? null : isDay === 1,
+    sunrise: at(daily.sunrise, 0),
+    sunset: at(daily.sunset, 0),
+    sunriseNext: at(daily.sunrise, 1),
+    sunsetNext: at(daily.sunset, 1),
+    hourly: hours
+  };
+}
+
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+
+function fmtTemp(c) {
+  return isNum(c) ? `${Math.round(c)}°` : '–';
+}
+
+function fmtWindDir(deg) {
+  if (!isNum(deg)) return '–';
+  const dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  return dirs[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
+}
+
+// WHO UV categories on the rounded index.
+function uvLevel(uv) {
+  if (!isNum(uv)) return null;
+  const u = Math.round(uv);
+  if (u <= 2) return { label: 'Low', tone: 'ok' };
+  if (u <= 5) return { label: 'Moderate', tone: 'neutral' };
+  if (u <= 7) return { label: 'High', tone: 'warn' };
+  if (u <= 10) return { label: 'Very high', tone: 'bad' };
+  return { label: 'Extreme', tone: 'bad' };
+}
+
+function nextSunEvent(m, nowSec = Date.now() / 1000) {
+  if (!m) return null;
+  const events = [['sunrise', m.sunrise], ['sunset', m.sunset], ['sunrise', m.sunriseNext], ['sunset', m.sunsetNext]]
+    .filter(([, t]) => isNum(t) && t > nowSec)
+    .sort((a, b) => a[1] - b[1]);
+  return events.length ? { kind: events[0][0], t: events[0][1] } : null;
+}
+
+function radarMetricCard(radar, nowSec) {
+  const card = { id: 'radar', label: 'Radar', tone: 'neutral' };
+  if (!radar) return { ...card, value: 'Loading…', sub: 'RainViewer' };
+  const age = radar.frameTime ? Math.max(0, Math.round((nowSec - radar.frameTime) / 60)) : null;
+  const ageTxt = age !== null ? `frame ${age} min old` : 'RainViewer';
+  if (radar.status === 'echo') return { ...card, value: 'Rain here', sub: ageTxt, tone: 'bad' };
+  if (radar.status === 'none' && radar.nearby) return { ...card, value: 'Rain nearby', sub: `within ~13 km · ${ageTxt}`, tone: 'warn' };
+  if (radar.status === 'none') return { ...card, value: 'No echo', sub: `patchy coverage · ${ageTxt}` };
+  if (radar.status === 'stale') return { ...card, value: 'Stale', sub: ageTxt };
+  return { ...card, value: 'Unavailable', sub: 'RainViewer' };
+}
+
+// Metric cards for the conditions grid. Always 8 cards; missing values show "–".
+function metricCards(m, radar, nowSec = Date.now() / 1000) {
+  const dash = '–';
+  const has = k => !!m && isNum(m[k]);
+  const h0 = m && Array.isArray(m.hourly) ? (m.hourly.find(p => p.t > nowSec) || null) : null;
+  const uv = m ? uvLevel(m.uv) : null;
+  const sun = nextSunEvent(m, nowSec);
+  const clock = t => fmtClock(new Date(t * 1000));
+  const cloudWord = !has('cloudPct') ? '' : m.cloudPct >= 85 ? 'Overcast' : m.cloudPct >= 50 ? 'Mostly cloudy' : m.cloudPct >= 20 ? 'Partly cloudy' : 'Clear';
+  const humidWord = !has('humidity') ? '' : m.humidity >= 85 ? 'Very humid' : m.humidity >= 60 ? 'Humid' : m.humidity >= 30 ? 'Comfortable' : 'Dry air';
+  let sunSub = '';
+  if (sun && sun.kind === 'sunset' && has('sunrise')) sunSub = `Sunrise ${clock(m.sunrise)}`;
+  else if (sun && sun.kind === 'sunrise' && has('sunset')) sunSub = `Sunset ${clock(m.sunset)}`;
+
+  return [
+    { id: 'feels', label: 'Feels like', value: has('feelsC') ? fmtTemp(m.feelsC) : dash, sub: has('tempC') ? `Actual ${fmtTemp(m.tempC)}` : '', tone: 'neutral' },
+    {
+      id: 'rain', label: 'Rain next hour',
+      value: h0 && isNum(h0.prob) ? `${Math.round(h0.prob)}%` : dash,
+      sub: h0 && isNum(h0.mm) ? `${h0.mm.toFixed(1)} mm expected` : 'chance of rain',
+      tone: !h0 || !isNum(h0.prob) ? 'neutral' : h0.prob >= 60 ? 'bad' : h0.prob >= 30 ? 'warn' : 'ok'
+    },
+    {
+      id: 'wind', label: 'Wind',
+      value: has('windKmh') ? `${Math.round(m.windKmh)} km/h` : dash,
+      sub: [has('windDirDeg') ? `from ${fmtWindDir(m.windDirDeg)}` : '', has('gustKmh') ? `gusts ${Math.round(m.gustKmh)}` : ''].filter(Boolean).join(' · '),
+      tone: has('gustKmh') && m.gustKmh >= 40 ? 'warn' : 'neutral',
+      arrowDeg: has('windDirDeg') ? (m.windDirDeg + 180) % 360 : null // arrow points where the wind goes
+    },
+    { id: 'humidity', label: 'Humidity', value: has('humidity') ? `${Math.round(m.humidity)}%` : dash, sub: humidWord, tone: 'neutral' },
+    {
+      id: 'uv', label: 'UV index',
+      value: has('uv') ? String(Math.round(m.uv)) : dash,
+      sub: [uv ? uv.label : '', has('uvMax') ? `max ${Math.round(m.uvMax)}` : ''].filter(Boolean).join(' · '),
+      tone: uv ? uv.tone : 'neutral'
+    },
+    { id: 'cloud', label: 'Cloud cover', value: has('cloudPct') ? `${Math.round(m.cloudPct)}%` : dash, sub: cloudWord, tone: 'neutral' },
+    {
+      id: 'sun', label: sun ? (sun.kind === 'sunset' ? 'Sunset' : 'Sunrise') : 'Sun',
+      value: sun ? clock(sun.t) : dash, sub: sunSub, tone: 'neutral', next: sun ? sun.kind : null
+    },
+    radarMetricCard(radar, nowSec)
+  ];
+}
+
+// Hourly chart geometry: bar height ∝ rain chance, bar colour = rain amount, temperature
+// line in the top 30% band, a time tick every 3 h. Pure (no DOM) so it is testable.
+function buildHourlyChartModel(hourly, size) {
+  const w = (size && size.w) || 336;
+  const h = (size && size.h) || 120;
+  const list = Array.isArray(hourly) ? hourly : [];
+  const n = list.length;
+  const plotH = h - 16;                       // 16 px for the time ticks
+  const bandH = Math.round(plotH * 0.3);      // temperature band
+  const barMaxH = plotH - bandH - 10;         // 10 px for the mm labels
+  const slot = n ? w / n : w;
+  const bw = Math.max(2, slot * 0.6);
+  const bars = list.map((p, i) => {
+    const prob = isNum(p.prob) ? Math.max(0, Math.min(100, p.prob)) : 0;
+    const bh = prob / 100 * barMaxH;
+    const mm = isNum(p.mm) ? p.mm : 0;
+    const [r, g, b, a] = rainColor(Math.max(mm, 0.1));
+    return {
+      x: +(i * slot + (slot - bw) / 2).toFixed(1), y: +(plotH - bh).toFixed(1), w: +bw.toFixed(1), h: +bh.toFixed(1),
+      fill: `rgba(${r}, ${g}, ${b}, ${Math.max(a, 0.55)})`, mmLabel: mm >= 0.1 ? mm.toFixed(1) : '', prob
+    };
+  });
+  const tVals = list.map(p => p.tempC).filter(isNum);
+  const tMax = tVals.length ? Math.max(...tVals) : 0;
+  const tSpan = tVals.length ? (tMax - Math.min(...tVals)) || 1 : 1;
+  const temps = [];
+  let tempPath = '';
+  let penDown = false;
+  list.forEach((p, i) => {
+    if (!isNum(p.tempC)) { penDown = false; return; }
+    const x = +(i * slot + slot / 2).toFixed(1);
+    const y = +(12 + (tMax - p.tempC) / tSpan * Math.max(1, bandH - 12)).toFixed(1);
+    tempPath += `${tempPath ? ' ' : ''}${penDown ? 'L' : 'M'}${x} ${y}`;
+    penDown = true;
+    temps.push({ x, y, label: fmtTemp(p.tempC), showLabel: i % 3 === 0 });
+  });
+  const ticks = [];
+  list.forEach((p, i) => { if (i % 3 === 0) ticks.push({ x: +(i * slot + slot / 2).toFixed(1), label: fmtClock(new Date(p.t * 1000)) }); });
+  const maxProb = bars.reduce((mx, b) => Math.max(mx, b.prob), 0);
+  return { w, h, plotH, bars, tempPath, temps, ticks, summary: n ? `Next ${n} h: rain chance up to ${Math.round(maxProb)}%` : 'No hourly data' };
+}
+
+// Bottom-sheet snap: a fling (|v| > 0.45 px/ms, + = upwards) moves one snap in that
+// direction, otherwise the nearest snap wins. `snaps` = { peek, half, full } in px visible.
+function snapSheetTarget(pos, velocityPxPerMs, snaps) {
+  const order = Object.keys(snaps).sort((a, b) => snaps[a] - snaps[b]);
+  if (Math.abs(velocityPxPerMs) > 0.45) {
+    if (velocityPxPerMs > 0) return order.find(k => snaps[k] > pos + 1) || order[order.length - 1];
+    return [...order].reverse().find(k => snaps[k] < pos - 1) || order[0];
+  }
+  return order.reduce((best, k) => (Math.abs(snaps[k] - pos) < Math.abs(snaps[best] - pos) ? k : best), order[0]);
+}
+
+// Sheet heights (px visible) for a viewport height and safe-area insets.
+// minPeekContent = measured height of the head + timeline (so the legend isn't clipped).
+function sheetSnapsFor(H, safeTop, safeBottom, minPeekContent) {
+  const peek = Math.round(Math.max(148, minPeekContent || 0) + safeBottom);
+  const full = Math.max(peek + 80, Math.round(H - (safeTop + 64)));
+  const half = Math.min(full - 40, Math.max(peek + 40, Math.round(0.52 * H)));
+  return { peek, half, full };
+}
+
+// ---------------------------------------------------------------------------
+// Map panes + overlay layers
+// ---------------------------------------------------------------------------
+// Overlays live in their own panes outside the tile pane, so the desktop CSS filter that
+// darkens OSM tiles never recolours radar / satellite / model images.
+
+let radarFrameLayers = new Map(); // RainViewer frame path -> L.tileLayer
+let gridOverlay = null;
+let gridOverlayKey = null;
+let satLayer = null;
+let layerControl = null;
+let gridFetchKey = null;
+const layerToggleInputs = [];
+const timelineState = { frames: [], index: -1, nowIndex: -1, playing: false, timer: null, loops: 0, trimTimer: null };
+
+function ensureMapPanes() {
+  if (!mapInstance || typeof mapInstance.createPane !== 'function') return false;
+  [['rsSat', 250], ['rsGrid', 340], ['rsRadar', 350]].forEach(([name, z]) => {
+    if (mapInstance.getPane(name)) return;
+    const pane = mapInstance.createPane(name);
+    pane.style.zIndex = String(z);
+    pane.style.pointerEvents = 'none';
+  });
+  return true;
+}
+
+function removeMapLayer(layer) {
+  if (mapInstance && layer && mapInstance.hasLayer(layer)) mapInstance.removeLayer(layer);
+}
+
+function addMapLayer(layer) {
+  if (mapInstance && layer && !mapInstance.hasLayer(layer)) layer.addTo(mapInstance);
+}
+
+// Phones: CARTO dark basemap (no CSS filter). Desktop: OSM with the existing dark filter.
+function setBaseLayer(mobile) {
+  if (!mapInstance || typeof L === 'undefined') return;
+  if (mobile) {
+    if (!cartoBaseLayer) {
+      cartoBaseLayer = L.tileLayer(CARTO_DARK_TILES, {
+        subdomains: 'abcd',
+        maxZoom: 19,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'
+      });
+    }
+    removeMapLayer(osmBaseLayer);
+    addMapLayer(cartoBaseLayer);
+  } else {
+    removeMapLayer(cartoBaseLayer);
+    addMapLayer(osmBaseLayer);
+  }
+}
+
+// One tile layer per radar frame, created lazily (opacity 0 = preloaded but hidden).
+function radarLayerFor(path) {
+  if (radarFrameLayers.has(path)) return radarFrameLayers.get(path);
+  const meta = appState.radarMeta;
+  if (!mapInstance || !meta || typeof L === 'undefined') return null;
+  const layer = L.tileLayer(`${meta.host}${path}/256/{z}/{x}/{y}/2/1_1.png`, {
+    pane: 'rsRadar',
+    opacity: 0,
+    maxNativeZoom: 7, // RainViewer serves z <= 7 only
+    maxZoom: 19,
+    updateWhenZooming: false,
+    keepBuffer: isMobileMap() ? 0 : 2,
+    attribution: RADAR_ATTRIBUTION
+  });
+  radarFrameLayers.set(path, layer);
+  if (appState.layers.radar) layer.addTo(mapInstance);
+  return layer;
+}
+
+function ensureAllFrameLayers() {
+  timelineState.frames.forEach(f => { if (f.kind === 'radar') radarLayerFor(f.path); });
+}
+
+function gridBounds(grid) {
+  const half = (grid.n - 1) / 2 * grid.step + grid.step / 2; // cell centres ± half a cell
+  return [[grid.lat0 - half, grid.lon0 - half], [grid.lat0 + half, grid.lon0 + half]];
+}
+
+function showGridHour(hourIdx) {
+  const grid = appState.grid;
+  const url = grid && grid.dataUrls ? grid.dataUrls[hourIdx] : null;
+  if (!url || !mapInstance || typeof L === 'undefined') { hideGridOverlay(); return; }
+  if (!gridOverlay || gridOverlayKey !== grid.key) {
+    removeMapLayer(gridOverlay);
+    gridOverlay = L.imageOverlay(url, gridBounds(grid), {
+      pane: 'rsGrid',
+      opacity: 0.6,
+      interactive: false,
+      attribution: 'Model: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>'
+    });
+    gridOverlayKey = grid.key;
+  } else {
+    gridOverlay.setUrl(url);
+  }
+  addMapLayer(gridOverlay);
+}
+
+function hideGridOverlay() {
+  removeMapLayer(gridOverlay);
+}
+
+// ---------------------------------------------------------------------------
+// Timeline control (play / scrub) — shared by the phone sheet and the desktop map
+// ---------------------------------------------------------------------------
+
+function buildTimelineControl() {
+  const existing = document.getElementById('rsTimeline');
+  if (existing) return existing;
+  const root = document.createElement('div');
+  root.id = 'rsTimeline';
+  root.className = 'rs-timeline rs-empty';
+  root.setAttribute('role', 'group');
+  root.setAttribute('aria-label', 'Rain map timeline');
+
+  const play = document.createElement('button');
+  play.id = 'rsPlay';
+  play.type = 'button';
+  play.className = 'rs-play';
+  play.textContent = '▶';
+  play.setAttribute('aria-label', 'Play rain map loop');
+
+  const slider = document.createElement('input');
+  slider.id = 'rsSlider';
+  slider.type = 'range';
+  slider.className = 'rs-slider';
+  slider.min = '0';
+  slider.max = '0';
+  slider.step = '1';
+  slider.value = '0';
+  slider.setAttribute('aria-label', 'Rain map time');
+
+  const label = document.createElement('span');
+  label.id = 'rsTimeLabel';
+  label.className = 'rs-time-label';
+
+  const tag = document.createElement('span');
+  tag.id = 'rsSourceTag';
+  tag.className = 'rs-source-tag';
+
+  const legend = document.createElement('div');
+  legend.id = 'rsLegend';
+  legend.className = 'rs-legend';
+  const bar = document.createElement('span');
+  bar.className = 'rs-legend-bar';
+  bar.style.background = rainLegendGradient();
+  const legendText = document.createElement('span');
+  legendText.id = 'rsLegendText';
+  legendText.className = 'rs-legend-text';
+  legendText.textContent = 'No rain map data';
+  legend.appendChild(bar);
+  legend.appendChild(legendText);
+
+  [play, slider, label, tag, legend].forEach(child => root.appendChild(child));
+
+  play.addEventListener('click', () => toggleTimelinePlay());
+  slider.addEventListener('input', () => {
+    stopTimeline();
+    ensureAllFrameLayers();
+    showFrame(Number(slider.value));
+  });
+  return root;
+}
+
+function renderTimelineLabel(f) {
+  const root = document.getElementById('rsTimeline');
+  if (!root) return;
+  const slider = document.getElementById('rsSlider');
+  const label = document.getElementById('rsTimeLabel');
+  const tag = document.getElementById('rsSourceTag');
+  const legendText = document.getElementById('rsLegendText');
+  const n = timelineState.frames.length;
+  root.classList.toggle('rs-empty', !f);
+  if (slider) {
+    slider.max = String(Math.max(0, n - 1));
+    slider.value = String(Math.max(0, timelineState.index));
+    slider.disabled = n < 2;
+  }
+  if (!f) {
+    if (label) label.textContent = '';
+    if (tag) tag.textContent = '';
+    if (legendText) legendText.textContent = 'No rain map data';
+    return;
+  }
+  const text = `${f.label} · ${f.rel}`;
+  if (label) label.textContent = text;
+  if (slider) slider.setAttribute('aria-valuetext', `${text} ${f.kind === 'radar' ? 'radar' : 'forecast model'}`);
+  if (tag) {
+    tag.className = `rs-source-tag ${f.kind === 'radar' ? 'is-radar' : 'is-model'}`;
+    tag.textContent = f.kind === 'radar'
+      ? (appState.gridFailed && appState.layers.grid ? 'RADAR · Forecast map unavailable' : 'RADAR')
+      : 'FORECAST MODEL · ~10–25 km, not radar';
+  }
+  if (legendText) legendText.textContent = 'Light · Mod · Heavy · Extreme (approx.)';
+}
+
+function showFrame(i) {
+  const frames = timelineState.frames;
+  if (!frames.length) {
+    timelineState.index = -1;
+    radarFrameLayers.forEach(layer => layer.setOpacity(0));
+    hideGridOverlay();
+    renderTimelineLabel(null);
+    return;
+  }
+  const idx = Math.max(0, Math.min(frames.length - 1, Number.isFinite(i) ? i : timelineState.nowIndex));
+  timelineState.index = idx;
+  const f = frames[idx];
+  if (f.kind === 'radar') radarLayerFor(f.path);
+  radarFrameLayers.forEach((layer, path) => layer.setOpacity(f.kind === 'radar' && path === f.path ? RADAR_OPACITY : 0));
+  if (f.kind === 'model') showGridHour(f.hourIdx);
+  else hideGridOverlay();
+  renderTimelineLabel(f);
+}
+
+// Rebuild frames after new radar/grid data or a layer toggle. Stays on the same frame
+// unless the user was on "now", in which case it follows the new "now".
+function rebuildTimeline() {
+  if (!mapInstance) return;
+  const prev = timelineState.frames[timelineState.index];
+  const wasAtNow = timelineState.index === -1 || timelineState.index === timelineState.nowIndex;
+  const o = appState.originCoords || DEFAULT_COORDS;
+  const gridOk = appState.grid && appState.grid.dataUrls && appState.grid.dataUrls.length
+    && appState.grid.key === gridKeyFor(buildGridPoints(o.lat, o.lon)); // never show another area's grid
+  const grid = gridOk ? appState.grid : null;
+  const { frames, defaultIndex } = buildTimelineFrames(
+    appState.layers.radar ? appState.radarMeta : null,
+    appState.layers.grid ? grid : null,
+    Date.now() / 1000
+  );
+  timelineState.frames = frames;
+  timelineState.nowIndex = defaultIndex;
+
+  // Frames that left the 2-h window: drop their tile layers.
+  const keep = new Set(frames.filter(f => f.kind === 'radar').map(f => f.path));
+  radarFrameLayers.forEach((layer, path) => {
+    if (!keep.has(path)) { removeMapLayer(layer); radarFrameLayers.delete(path); }
+  });
+
+  let idx = defaultIndex;
+  if (!wasAtNow && prev) {
+    const same = frames.findIndex(f => f.kind === prev.kind && f.t === prev.t);
+    if (same !== -1) idx = same;
+  }
+  if (timelineState.playing && frames.length < 2) stopTimeline();
+  showFrame(idx);
+  // Hidden frame layers still reload tiles on every pan/zoom: when idle keep only the
+  // frame on screen (playback recreates the others lazily).
+  if (!timelineState.playing) trimRadarLayers();
+}
+
+function syncRadarFrames() {
+  if (!mapInstance) return;
+  rebuildTimeline();
+}
+
+function setPlayButton(playing) {
+  const btn = document.getElementById('rsPlay');
+  if (!btn) return;
+  btn.textContent = playing ? '❚❚' : '▶';
+  btn.setAttribute('aria-label', playing ? 'Pause rain map loop' : 'Play rain map loop');
+  btn.classList.toggle('is-playing', playing);
+}
+
+function stopTimeline() {
+  clearTimeout(timelineState.timer);
+  timelineState.timer = null;
+  if (timelineState.playing) {
+    timelineState.playing = false;
+    setPlayButton(false);
+  }
+  scheduleRadarTrim();
+}
+
+function toggleTimelinePlay(force) {
+  const play = force !== undefined ? !!force : !timelineState.playing;
+  if (!play) { stopTimeline(); return; }
+  if (timelineState.frames.length < 2) return;
+  ensureAllFrameLayers();
+  clearTimeout(timelineState.trimTimer);
+  timelineState.playing = true;
+  timelineState.loops = 0;
+  setPlayButton(true);
+  if (timelineState.index >= timelineState.frames.length - 1) showFrame(0);
+  scheduleNextFrame();
+}
+
+// 450 ms per radar frame, 800 ms per model hour, 1.5 s hold on "now" and the last frame.
+function scheduleNextFrame() {
+  const f = timelineState.frames[timelineState.index];
+  if (!timelineState.playing || !f) return;
+  const hold = timelineState.index === timelineState.nowIndex || timelineState.index === timelineState.frames.length - 1;
+  const delay = hold ? 1500 : f.kind === 'model' ? 800 : 450;
+  timelineState.timer = setTimeout(advanceTimeline, delay);
+}
+
+function advanceTimeline() {
+  if (!timelineState.playing) return;
+  let next = timelineState.index + 1;
+  if (next >= timelineState.frames.length) {
+    next = 0;
+    timelineState.loops++;
+    if (timelineState.loops >= 3) { stopTimeline(); return; } // auto-stop after 3 loops
+  }
+  // Wait (max 1.2 s) for the next radar frame's tiles so the loop doesn't flash blank.
+  const f = timelineState.frames[next];
+  const layer = f && f.kind === 'radar' ? radarLayerFor(f.path) : null;
+  const started = Date.now();
+  const go = () => {
+    if (!timelineState.playing) return;
+    if (layer && layer.isLoading() && Date.now() - started < 1200) {
+      timelineState.timer = setTimeout(go, 100);
+      return;
+    }
+    showFrame(next);
+    scheduleNextFrame();
+  };
+  go();
+}
+
+// Phones: after 60 s idle keep only the frame on screen (frees tile memory).
+function scheduleRadarTrim() {
+  clearTimeout(timelineState.trimTimer);
+  timelineState.trimTimer = setTimeout(trimRadarLayers, isMobileMap() ? 60000 : 300000);
+}
+
+function trimRadarLayers() {
+  if (timelineState.playing) return;
+  const cur = timelineState.frames[timelineState.index];
+  radarFrameLayers.forEach((layer, path) => {
+    if (cur && cur.kind === 'radar' && cur.path === path) return;
+    removeMapLayer(layer);
+    radarFrameLayers.delete(path);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Experimental forecast grid (Open-Meteo, 49 points)
+// ---------------------------------------------------------------------------
+
+async function fetchForecastGrid(lat, lon) {
+  const spec = buildGridPoints(lat, lon);
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${spec.points.map(p => p.lat).join(',')}&longitude=${spec.points.map(p => p.lon).join(',')}&hourly=precipitation,precipitation_probability&forecast_hours=7&timeformat=unixtime`;
+  const res = await fetchWithTimeout(url, {}, 9000);
+  if (!res.ok) throw new Error('grid API ' + res.status);
+  const grid = parseGridResponse(await res.json(), spec);
+  grid.key = gridKeyFor(spec);
+  return grid;
+}
+
+function gridKeyFor(spec) {
+  return `${spec.lat0.toFixed(2)},${spec.lon0.toFixed(2)}`;
+}
+
+// Hourly 7 × 7 colour images, upscaled with smoothing → data: URLs for one imageOverlay.
+function renderGridImages(grid) {
+  grid.dataUrls = [];
+  if (typeof document.createElement !== 'function') return;
+  try {
+    const src = document.createElement('canvas');
+    src.width = grid.n;
+    src.height = grid.n;
+    const sctx = src.getContext && src.getContext('2d');
+    if (!sctx || typeof sctx.createImageData !== 'function') return;
+    const out = document.createElement('canvas');
+    out.width = 56;
+    out.height = 56;
+    const octx = out.getContext('2d');
+    grid.precip.forEach((cells, h) => {
+      const img = sctx.createImageData(grid.n, grid.n);
+      cells.forEach((mm, i) => {
+        const [r, g, b, a] = rainColor(mm);
+        img.data[i * 4] = r;
+        img.data[i * 4 + 1] = g;
+        img.data[i * 4 + 2] = b;
+        img.data[i * 4 + 3] = Math.round(a * 255);
+      });
+      sctx.putImageData(img, 0, 0);
+      octx.clearRect(0, 0, 56, 56);
+      octx.imageSmoothingEnabled = true;
+      octx.drawImage(src, 0, 0, 56, 56);
+      const url = out.toDataURL('image/png');
+      if (typeof url === 'string' && url.startsWith('data:')) grid.dataUrls[h] = url;
+    });
+  } catch (e) {
+    console.warn('Forecast grid render failed:', e);
+    grid.dataUrls = [];
+  }
+}
+
+function useGrid(grid) {
+  appState.grid = grid;
+  renderGridImages(grid);
+  rebuildTimeline();
+}
+
+// Live only, map present and the forecast layer on. 30-min TTL; a localStorage copy
+// (< 45 min, same snapped centre) is reused across reloads.
+async function refreshForecastGrid() {
+  if (appState.activeScenario !== 'live' || !mapInstance || !appState.layers.grid) return;
+  const o = appState.originCoords || DEFAULT_COORDS;
+  const spec = buildGridPoints(o.lat, o.lon);
+  const key = gridKeyFor(spec);
+  const now = Date.now();
+  const g = appState.grid;
+  if (g && g.key === key && now - g.fetchedAt < GRID_TTL_MS) return;
+  if (gridFetchKey === key) return; // already in flight
+  // Back off after a failure (longer when rate-limited) instead of retrying every heartbeat.
+  const fail = appState.gridFailure;
+  if (fail && fail.key === key && now - fail.at < (fail.rateLimited ? 30 : 10) * 60000) return;
+
+  try {
+    const c = JSON.parse(localStorage.getItem(GRID_CACHE_KEY) || 'null');
+    if (c && c.key === key && c.grid && now - c.fetchedAt < GRID_CACHE_MAX_MS && (!g || g.key !== key)) {
+      // Hours that have passed since the cache was written are dropped by the timeline.
+      useGrid({ ...c.grid, key, fetchedAt: c.fetchedAt });
+      if (now - c.fetchedAt < GRID_TTL_MS) return;
+    }
+  } catch (e) { /* corrupt cache: refetch */ }
+
+  gridFetchKey = key;
+  try {
+    const grid = await fetchForecastGrid(o.lat, o.lon);
+    const cur = appState.originCoords || DEFAULT_COORDS;
+    if (gridKeyFor(buildGridPoints(cur.lat, cur.lon)) !== key) return; // user moved meanwhile
+    appState.gridFailed = false;
+    appState.gridFailure = null;
+    try {
+      const { lat0, lon0, step, n, times, precip, prob, fetchedAt } = grid;
+      localStorage.setItem(GRID_CACHE_KEY, JSON.stringify({ key, fetchedAt, grid: { lat0, lon0, step, n, times, precip, prob } }));
+    } catch (e) { /* quota / private mode: cache is optional */ }
+    useGrid(grid);
+  } catch (e) {
+    console.warn('Forecast grid fetch failed:', e);
+    appState.gridFailure = { key, at: Date.now(), rateLimited: /\b429\b/.test(String(e && e.message)) };
+    if (!appState.grid || appState.grid.key !== key) appState.gridFailed = true;
+    rebuildTimeline();
+  } finally {
+    if (gridFetchKey === key) gridFetchKey = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Layer toggles (radar / forecast / satellite / route) — mobile panel + desktop control
+// ---------------------------------------------------------------------------
+
+const LAYER_DEFS = [
+  { key: 'radar', title: 'Radar', sub: 'RainViewer · past 2 h' },
+  { key: 'grid', title: 'Forecast rain', sub: 'Experimental · model, next 6 h' },
+  { key: 'satellite', title: 'Satellite clouds', sub: 'IR clouds, ~1–2 h delay' },
+  { key: 'route', title: 'Trip route', sub: 'A/B pins and path' }
+];
+
+function buildLayerToggles(container) {
+  if (!container) return;
+  LAYER_DEFS.forEach(def => {
+    const row = document.createElement('label');
+    row.className = 'rs-layer-row';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = !!appState.layers[def.key];
+    box.setAttribute('data-layer', def.key);
+    const text = document.createElement('span');
+    text.className = 'rs-layer-text';
+    const title = document.createElement('span');
+    title.className = 'rs-layer-title';
+    title.textContent = def.title;
+    const sub = document.createElement('span');
+    sub.className = 'rs-layer-sub';
+    sub.textContent = def.sub;
+    text.appendChild(title);
+    text.appendChild(sub);
+    row.appendChild(box);
+    row.appendChild(text);
+    container.appendChild(row);
+    box.addEventListener('change', () => setMapLayer(def.key, box.checked));
+    layerToggleInputs.push({ key: def.key, box });
+  });
+}
+
+function setMapLayer(key, on) {
+  appState.layers[key] = !!on;
+  try { localStorage.setItem(LAYERS_KEY, JSON.stringify(appState.layers)); } catch (e) { /* optional */ }
+  layerToggleInputs.forEach(t => { t.box.checked = !!appState.layers[t.key]; });
+  applyLayers();
+}
+
+function applyLayers() {
+  if (!mapInstance || typeof L === 'undefined') return;
+  const on = appState.layers;
+  if (on.satellite) {
+    if (!satLayer) {
+      satLayer = L.tileLayer(GIBS_IR_TILES, {
+        pane: 'rsSat',
+        opacity: 0.45,
+        maxNativeZoom: 6,
+        maxZoom: 19,
+        attribution: 'Satellite: <a href="https://earthdata.nasa.gov/gibs" target="_blank" rel="noopener">NASA GIBS</a> / JMA Himawari'
+      });
+    }
+    addMapLayer(satLayer);
+  } else {
+    removeMapLayer(satLayer);
+  }
+  radarFrameLayers.forEach(layer => (on.radar ? addMapLayer(layer) : removeMapLayer(layer)));
+  [routeLineLayer, originMarker, destMarker].forEach(layer => (on.route ? addMapLayer(layer) : removeMapLayer(layer)));
+  if (on.grid) refreshForecastGrid();
+  rebuildTimeline();
+}
+
+function addDesktopLayerControl() {
+  if (layerControl || !mapInstance || typeof L.control !== 'function') return;
+  // top-left: the desktop map's top-right corner holds the Recenter button
+  layerControl = L.control({ position: 'topleft' });
+  layerControl.onAdd = () => {
+    const div = L.DomUtil.create('div', 'rs-layer-control');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rs-layer-btn';
+    btn.textContent = 'Layers';
+    btn.setAttribute('aria-expanded', 'false');
+    const panel = document.createElement('div');
+    panel.className = 'rs-layer-panel';
+    panel.hidden = true;
+    buildLayerToggles(panel);
+    btn.addEventListener('click', () => {
+      panel.hidden = !panel.hidden;
+      btn.setAttribute('aria-expanded', String(!panel.hidden));
+    });
+    div.appendChild(btn);
+    div.appendChild(panel);
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    return div;
+  };
+  layerControl.addTo(mapInstance);
+}
+
+// ============================================================================
+// 8.7 CONDITIONS METRICS CARD + HOURLY CHART
+// ============================================================================
+
+let metricsRenderKey = '';
+let metricsAnimated = false;
+
+function buildMetricCard(c, animate) {
+  const card = document.createElement('div');
+  card.className = `metric-card tone-${c.tone || 'neutral'}${c.next ? ' is-next' : ''}${animate ? ' rs-rise' : ''}`;
+  card.setAttribute('data-metric', c.id);
+  const label = document.createElement('span');
+  label.className = 'metric-label';
+  label.textContent = c.label;
+  const value = document.createElement('span');
+  value.className = 'metric-value';
+  if (isNum(c.arrowDeg)) {
+    const arrow = document.createElement('span');
+    arrow.className = 'metric-arrow';
+    arrow.textContent = '↑';
+    arrow.style.transform = `rotate(${Math.round(c.arrowDeg)}deg)`;
+    value.appendChild(arrow);
+  }
+  const valueText = document.createElement('span');
+  valueText.textContent = c.value;
+  value.appendChild(valueText);
+  const sub = document.createElement('span');
+  sub.className = 'metric-sub';
+  sub.textContent = c.sub || '';
+  card.appendChild(label);
+  card.appendChild(value);
+  card.appendChild(sub);
+  return card;
+}
+
+// SVG chart via createElementNS/setAttribute only (skipped where SVG isn't available).
+function renderHourlyChart(el, model) {
+  if (!el) return;
+  el.textContent = '';
+  if (!model || !model.bars.length) {
+    const empty = document.createElement('div');
+    empty.className = 'hourly-empty';
+    empty.textContent = 'Hourly forecast loading…';
+    el.appendChild(empty);
+    return;
+  }
+  if (typeof document.createElementNS !== 'function') return;
+  const node = (tag, attrs, text) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs).forEach(k => n.setAttribute(k, String(attrs[k])));
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const svg = node('svg', { viewBox: `0 0 ${model.w} ${model.h}`, class: 'hourly-svg', role: 'img', 'aria-label': model.summary, preserveAspectRatio: 'none' });
+  svg.appendChild(node('line', { x1: 0, y1: model.plotH + 0.5, x2: model.w, y2: model.plotH + 0.5, class: 'hc-axis' }));
+  model.bars.forEach(b => {
+    if (b.h > 0) svg.appendChild(node('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 2, fill: b.fill }));
+    if (b.mmLabel) svg.appendChild(node('text', { x: +(b.x + b.w / 2).toFixed(1), y: +(b.y - 2).toFixed(1), class: 'hc-mm', 'text-anchor': 'middle' }, b.mmLabel));
+  });
+  if (model.tempPath) svg.appendChild(node('path', { d: model.tempPath, class: 'hc-temp', fill: 'none' }));
+  model.temps.forEach(t => {
+    svg.appendChild(node('circle', { cx: t.x, cy: t.y, r: 2, class: 'hc-temp-dot' }));
+    if (t.showLabel) svg.appendChild(node('text', { x: t.x, y: +(t.y - 4).toFixed(1), class: 'hc-temp-label', 'text-anchor': 'middle' }, t.label));
+  });
+  model.ticks.forEach(t => svg.appendChild(node('text', { x: t.x, y: model.h - 3, class: 'hc-tick', 'text-anchor': 'middle' }, t.label)));
+  el.appendChild(svg);
+}
+
+function renderMetrics() {
+  const live = appState.activeScenario === 'live';
+  const m = live && appState.metrics && sameSpot(appState.metrics, appState.originCoords) ? appState.metrics : null;
+  const nowSec = Date.now() / 1000;
+
+  // Phone top bar
+  const mPlace = document.getElementById('mPlace');
+  if (mPlace) mPlace.textContent = (appState.origin || DEFAULT_COORDS.name).split(',')[0].trim();
+  const mTemp = document.getElementById('mTemp');
+  if (mTemp) mTemp.textContent = m ? fmtTemp(m.tempC) : '–';
+  const mStatus = document.getElementById('mStatus');
+  if (mStatus) {
+    const echo = live && appState.radar && appState.radar.status === 'echo';
+    mStatus.textContent = !live ? 'SIMULATION' : echo ? 'RAIN ON RADAR' : 'LIVE';
+    mStatus.setAttribute('data-tone', !live ? 'sim' : echo ? 'wet' : 'live');
+  }
+
+  const gridEl = document.getElementById('metricsGrid');
+  if (!gridEl) return;
+  const card = document.getElementById('metricsCard');
+  const chartEl = document.getElementById('hourlyChart');
+  const updatedEl = document.getElementById('metricsUpdated');
+  const cards = live ? metricCards(m, appState.radar, nowSec) : null;
+  const hourly = m && Array.isArray(m.hourly) ? m.hourly.filter(h => h.t > nowSec).slice(0, 12) : [];
+  // Skip the DOM rebuild when nothing visible changed (updateUI runs on every slider move).
+  const key = live ? JSON.stringify([cards, hourly.map(h => [h.t, h.mm, h.prob, h.tempC])]) : 'sim';
+  if (key === metricsRenderKey) return;
+  metricsRenderKey = key;
+
+  if (card) card.classList.toggle('is-sim', !live);
+  gridEl.textContent = '';
+  if (!live) {
+    const note = document.createElement('p');
+    note.className = 'metrics-note';
+    note.textContent = 'Live metrics shown in Live mode';
+    gridEl.appendChild(note);
+    if (chartEl) chartEl.textContent = '';
+    if (updatedEl) updatedEl.textContent = 'Simulation';
+    return;
+  }
+  const animate = !!m && !metricsAnimated; // one-shot rise on the first real fill
+  cards.forEach(c => gridEl.appendChild(buildMetricCard(c, animate)));
+  if (animate) metricsAnimated = true;
+  if (updatedEl) updatedEl.textContent = m && m.at ? `Updated ${fmtClock(new Date(m.at * 1000))}` : 'Loading…';
+  renderHourlyChart(chartEl, hourly.length ? buildHourlyChartModel(hourly) : null);
+}
+
+// ============================================================================
+// 8.8 MAP-FIRST PHONE LAYOUT (full-screen map + draggable bottom sheet)
+// ============================================================================
+// One Leaflet map: on phones (<= 768px) #routeMap moves into the full-screen #mapStage and
+// the cockpit moves into the sheet; on desktop every node goes back to where it was.
+
+const sheetState = { snaps: null, snap: 'peek', visible: 0, drag: null, raf: null, suppressClick: false, lastW: 0, lastH: 0 };
+const layoutState = { mobile: null, homes: new Map() };
+
+function moveNodeTo(el, parent, before) {
+  if (!el || !parent || !el.parentNode) return;
+  if (!layoutState.homes.has(el)) {
+    // Comment marker at the original spot: robust even when siblings move too.
+    const marker = document.createComment('rs-home');
+    el.parentNode.insertBefore(marker, el);
+    layoutState.homes.set(el, marker);
+  }
+  parent.insertBefore(el, before || null);
+}
+
+function restoreNode(el) {
+  const marker = el && layoutState.homes.get(el);
+  if (marker && marker.parentNode) marker.parentNode.insertBefore(el, marker);
+}
+
+function applyLayoutMode(isMobile) {
+  if (!document.body || isMobile === layoutState.mobile) return;
+  layoutState.mobile = isMobile;
+  document.body.classList.toggle('m-map', isMobile);
+  // Also on <html>: it is the viewport scroller, so overscroll-behavior must live there to
+  // stop Android pull-to-refresh / iOS bounce on the full-screen map.
+  if (document.documentElement && document.documentElement.classList) document.documentElement.classList.toggle('m-map', isMobile);
+
+  const byId = id => document.getElementById(id);
+  const routeMap = byId('routeMap');
+  const cockpit = document.querySelector('main.cockpit-grid');
+  const headerControls = document.querySelector('.header-controls');
+  const footer = document.querySelector('.app-footer');
+  const timelineEl = byId('rsTimeline');
+  const sheetScroll = byId('mSheetScroll');
+  const mapSection = document.querySelector('.interactive-map-section');
+
+  if (isMobile) {
+    moveNodeTo(routeMap, byId('mapStage'));
+    moveNodeTo(headerControls, byId('mActionsRow'));
+    moveNodeTo(cockpit, sheetScroll);
+    moveNodeTo(footer, sheetScroll);
+    if (timelineEl && byId('mSheet') && sheetScroll) byId('mSheet').insertBefore(timelineEl, sheetScroll);
+  } else {
+    [routeMap, headerControls, cockpit, footer].forEach(restoreNode);
+    if (timelineEl && mapSection) mapSection.appendChild(timelineEl);
+  }
+
+  setBaseLayer(isMobile);
+  const rain = window.rainEngineInstance;
+  if (rain) rain.setIntensity(rain.intensity, rain.windSpeed); // drops = 0 on the phone map
+  // Resize first so the new view is computed for the new container size.
+  mapInstance.invalidateSize({ pan: false });
+  if (isMobile) {
+    layoutSheet();
+    snapSheetTo('peek');
+    appState.mapFocus = 'radar';
+    const o = appState.originCoords || DEFAULT_COORDS;
+    mapInstance.setView([o.lat, o.lon], 9, { animate: false });
+    refreshForecastGrid();
+  } else {
+    appState.mapFocus = 'route';
+    stopTimeline();
+    fitRouteBounds();
+  }
+  requestAnimationFrame(() => { if (mapInstance) mapInstance.invalidateSize({ pan: false }); });
+}
+
+// Resolve env(safe-area-inset-*) to px with a throwaway probe element.
+function measureSafeAreas() {
+  try {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)';
+    document.body.appendChild(probe);
+    const cs = window.getComputedStyle(probe);
+    const res = { top: parseFloat(cs.height) || 0, bottom: parseFloat(cs.paddingBottom) || 0 };
+    probe.parentNode.removeChild(probe);
+    return res;
+  } catch (e) {
+    return { top: 0, bottom: 0 };
+  }
+}
+
+function applySheetTransform(visible) {
+  const el = document.getElementById('mSheet');
+  if (!el || !sheetState.snaps) return;
+  el.style.transform = `translate3d(0, ${Math.round(sheetState.snaps.full - visible)}px, 0)`;
+}
+
+function measurePeekContent() {
+  const head = document.getElementById('mSheetHead');
+  const tl = document.getElementById('rsTimeline');
+  const h = (head && head.offsetHeight) || 0;
+  const t = (tl && tl.parentNode && tl.parentNode.id === 'mSheet' && tl.offsetHeight) || 0;
+  return h + t;
+}
+
+function layoutSheet() {
+  const el = document.getElementById('mSheet');
+  if (!el) return;
+  const safe = measureSafeAreas();
+  sheetState.lastW = window.innerWidth;
+  sheetState.lastH = window.innerHeight;
+  sheetState.snaps = sheetSnapsFor(window.innerHeight, safe.top, safe.bottom, measurePeekContent());
+  el.style.height = `${sheetState.snaps.full}px`;
+  snapSheetTo(sheetState.snap);
+}
+
+function snapSheetTo(name) {
+  const el = document.getElementById('mSheet');
+  if (!el || !sheetState.snaps || !(name in sheetState.snaps)) return;
+  sheetState.snap = name;
+  sheetState.visible = sheetState.snaps[name];
+  el.classList.remove('dragging');
+  el.setAttribute('data-snap', name);
+  applySheetTransform(sheetState.visible);
+  // Leaflet's bottom controls/attribution sit just above the sheet (set on settle only).
+  document.documentElement.style.setProperty('--sheet-visible', `${sheetState.visible}px`);
+  const handle = document.getElementById('mSheetHandle');
+  if (handle) {
+    handle.setAttribute('aria-expanded', String(name !== 'peek'));
+    handle.setAttribute('aria-label', name === 'full' ? 'Collapse planner' : 'Expand planner');
+  }
+  const scroller = document.getElementById('mSheetScroll');
+  if (scroller && name !== 'full') scroller.scrollTop = 0;
+}
+
+// startT = time the finger went down, so the first velocity sample isn't ~0 ms old.
+function beginSheetDrag(y, startT) {
+  const el = document.getElementById('mSheet');
+  if (el) el.classList.add('dragging');
+  sheetState.drag = { startY: y, startVisible: sheetState.visible, samples: [{ t: startT || performance.now(), y }] };
+}
+
+function moveSheetDrag(y) {
+  const d = sheetState.drag;
+  if (!d || !sheetState.snaps) return;
+  const now = performance.now();
+  d.samples.push({ t: now, y });
+  while (d.samples.length > 2 && now - d.samples[0].t > 100) d.samples.shift(); // last 100 ms
+  const { peek, full } = sheetState.snaps;
+  let v = d.startVisible + (d.startY - y);
+  if (v < peek) v = peek - (peek - v) * 0.35; // rubber band below peek
+  sheetState.visible = Math.min(full, v);
+  if (!sheetState.raf) {
+    sheetState.raf = requestAnimationFrame(() => { sheetState.raf = null; applySheetTransform(sheetState.visible); });
+  }
+}
+
+function endSheetDrag() {
+  const d = sheetState.drag;
+  sheetState.drag = null;
+  if (!d) return;
+  const first = d.samples[0];
+  const last = d.samples[d.samples.length - 1];
+  const dt = last.t - first.t;
+  // No fling if the finger rested before release or the samples are too close in time.
+  const stale = performance.now() - last.t > 80;
+  const velocity = (!stale && dt >= 16) ? (first.y - last.y) / dt : 0; // px/ms, + = upwards
+  snapSheetTo(snapSheetTarget(sheetState.visible, velocity, sheetState.snaps));
+}
+
+function initBottomSheet() {
+  const el = document.getElementById('mSheet');
+  const head = document.getElementById('mSheetHead');
+  const handle = document.getElementById('mSheetHandle');
+  const peek = document.getElementById('mPeek');
+  const scroller = document.getElementById('mSheetScroll');
+  if (!el || !head || !scroller) return;
+
+  // Pointer drags: on the head always; anywhere on the sheet at peek/half (content
+  // doesn't scroll there). Form controls and the timeline keep their own gestures.
+  let ptr = null;
+  el.addEventListener('pointerdown', (e) => {
+    if ((e.pointerType === 'mouse' && e.button !== 0) || sheetState.drag) return;
+    const t = e.target;
+    const inHead = head.contains(t);
+    if (!inHead) {
+      if (sheetState.snap === 'full') return; // content scrolls; pull-down handled by touch events
+      if (t.closest && t.closest('input, select, textarea, button')) return;
+    }
+    ptr = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), started: false };
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!ptr || e.pointerId !== ptr.id) return;
+    if (!ptr.started) {
+      const dx = e.clientX - ptr.x;
+      const dy = e.clientY - ptr.y;
+      if (Math.abs(dy) < 6 || Math.abs(dy) < Math.abs(dx)) {
+        if (Math.abs(dx) > 12) ptr = null; // horizontal gesture: not ours
+        return;
+      }
+      ptr.started = true;
+      sheetState.suppressClick = true;
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* capture is best effort */ }
+      beginSheetDrag(ptr.y, ptr.t);
+    }
+    moveSheetDrag(e.clientY);
+  });
+  const finishPointer = (e) => {
+    if (!ptr || e.pointerId !== ptr.id) return;
+    const started = ptr.started;
+    ptr = null;
+    if (started) {
+      endSheetDrag();
+      setTimeout(() => { sheetState.suppressClick = false; }, 0);
+    }
+  };
+  el.addEventListener('pointerup', finishPointer);
+  el.addEventListener('pointercancel', finishPointer);
+
+  // Full sheet: content scrolls; pulling down at scrollTop 0 drags the sheet instead.
+  let pull = null;
+  scroller.addEventListener('touchstart', (e) => {
+    pull = sheetState.snap === 'full' && e.touches.length === 1 ? { y: e.touches[0].clientY, t: performance.now(), started: false } : null;
+  }, { passive: true });
+  scroller.addEventListener('touchmove', (e) => {
+    if (!pull || (sheetState.snap !== 'full' && !pull.started)) return;
+    const y = e.touches[0].clientY;
+    if (!pull.started) {
+      if (scroller.scrollTop > 0) { pull.y = y; pull.t = performance.now(); return; }
+      if (y - pull.y < 6) {
+        if (y < pull.y - 6) pull = null; // scrolling up: let the content scroll
+        return;
+      }
+      if (!e.cancelable) { pull = null; return; }
+      pull.started = true;
+      beginSheetDrag(pull.y, pull.t);
+    }
+    e.preventDefault();
+    moveSheetDrag(y);
+  }, { passive: false });
+  const finishTouch = () => {
+    const started = pull && pull.started;
+    pull = null;
+    if (started) endSheetDrag();
+  };
+  scroller.addEventListener('touchend', finishTouch);
+  scroller.addEventListener('touchcancel', finishTouch);
+
+  // Handle: tap / Enter cycles peek → half → full → peek. Hero tap opens half.
+  if (handle) {
+    handle.addEventListener('click', () => {
+      if (sheetState.suppressClick) { sheetState.suppressClick = false; return; }
+      snapSheetTo(sheetState.snap === 'peek' ? 'half' : sheetState.snap === 'half' ? 'full' : 'peek');
+    });
+  }
+  if (peek) {
+    const openHalf = () => {
+      if (sheetState.suppressClick) { sheetState.suppressClick = false; return; }
+      snapSheetTo('half');
+    };
+    peek.addEventListener('click', openHalf);
+    peek.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openHalf(); }
+    });
+  }
+
+  // Ignore the address-bar show/hide (height-only changes < 160 px).
+  window.addEventListener('resize', () => {
+    if (!isMobileMap()) return;
+    if (window.innerWidth === sheetState.lastW && Math.abs(window.innerHeight - sheetState.lastH) < 160) return;
+    layoutSheet();
+  });
+}
+
+// Peek hero + top bar summary (phone map only).
+function renderMobileSummary(plan, nowView) {
+  if (!isMobileMap()) return;
+  const data = appState.currentScenarioData;
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  let leave, unit, line, tone;
+  if (plan) {
+    const rec = plan.recommended;
+    leave = rec.offsetMin === 0 ? 'NOW' : String(rec.offsetMin);
+    unit = rec.offsetMin === 0
+      ? (rec.kind === 'now' ? 'GOOD TO GO' : rec.kind === 'now-fair' ? 'FAIR CHANCE' : 'NO BETTER LATER')
+      : (rec.kind === 'wait' ? 'MIN WAIT' : 'MIN · BEST BET');
+    line = rec.offsetMin === 0
+      ? `Leave now · ${fmtPct(rec.pOk)} chance your ${plan.tripMin}-min ${tripVerb()} stays dry enough`
+      : `Leave ~${clockIn(rec.offsetMin)} · ${fmtPct(rec.pOk)} chance of a dry-enough trip`;
+    tone = rec.pOk >= GOOD_P ? 'good' : rec.pOk >= FAIR_P ? 'fair' : 'poor';
+  } else {
+    leave = data.stopMinutes > 0 ? (data.stopBeyondHorizon ? formatStopShort(data) : String(data.stopMinutes)) : 'NOW';
+    unit = data.stopMinutes > 0 ? 'MIN TO DRY' : 'SKY DRY';
+    line = data.adviceHeadline || '';
+    tone = data.stopMinutes > 0 ? 'poor' : 'good';
+  }
+  set('mPeekLeave', leave);
+  set('mPeekUnit', unit);
+  set('mPeekLine', line);
+  set('mPeekSky', `${nowView ? nowView.icon : data.skyIcon} ${nowView ? nowView.title : data.skyTitle}`);
+  const peek = document.getElementById('mPeek');
+  if (peek) peek.setAttribute('data-tone', tone);
+}
+
+function initMapFirstLayout() {
+  if (typeof L === 'undefined' || !mapInstance || !window.matchMedia || !document.body) return;
+  ensureMapPanes();
+
+  // Timeline lives under the desktop map until a phone layout moves it into the sheet.
+  const timelineEl = buildTimelineControl();
+  const mapSection = document.querySelector('.interactive-map-section');
+  if (timelineEl && mapSection && !timelineEl.parentNode) mapSection.appendChild(timelineEl);
+
+  addDesktopLayerControl();
+  const panel = document.getElementById('mLayersPanel');
+  if (panel) buildLayerToggles(panel);
+  initBottomSheet();
+
+  const byId = id => document.getElementById(id);
+  const btnLayers = byId('mBtnLayers');
+  const setPanel = (open) => {
+    if (!panel) return;
+    panel.hidden = !open;
+    if (btnLayers) btnLayers.setAttribute('aria-expanded', String(open));
+  };
+  if (btnLayers) btnLayers.addEventListener('click', () => setPanel(panel && panel.hidden));
+  mapInstance.on('click', () => setPanel(false));
+  const btnGps = byId('mBtnGps');
+  if (btnGps) btnGps.addEventListener('click', () => { const b = byId('btnAutoDetect'); if (b) b.click(); });
+  const btnRecenter = byId('mBtnRecenter');
+  if (btnRecenter) {
+    btnRecenter.addEventListener('click', () => {
+      appState.mapFocus = 'radar';
+      const o = appState.originCoords || DEFAULT_COORDS;
+      mapInstance.setView([o.lat, o.lon], 9);
+    });
+  }
+  const btnRoute = byId('mBtnRoute');
+  if (btnRoute) {
+    btnRoute.addEventListener('click', () => {
+      appState.mapFocus = 'route';
+      if (!appState.layers.route) setMapLayer('route', true);
+      fitRouteBounds();
+    });
+  }
+
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopTimeline(); });
+
+  const mq = window.matchMedia('(max-width: 768px)');
+  const onChange = () => applyLayoutMode(mq.matches);
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else if (mq.addListener) mq.addListener(onChange);
+  applyLayoutMode(mq.matches);
+  applyLayers();
 }
 
 // ============================================================================
@@ -2577,7 +3926,8 @@ async function detectLocationWithFallback(isUserTriggered = false) {
     const inputO = document.getElementById('inputOrigin');
     if (inputO) inputO.value = placeName;
     if (originMarker) originMarker.setLatLng([lat, lon]);
-    if (mapInstance) mapInstance.setView([lat, lon], 14);
+    // Phone radar view stays zoomed out (regional rain); desktop zooms to the street.
+    if (mapInstance) mapInstance.setView([lat, lon], appState.mapFocus === 'radar' ? 9 : 14);
 
     const shortPlace = placeName.split(',')[0].trim();
     if (engLabel) engLabel.textContent = `${shortPlace} Live`;
@@ -3082,6 +4432,9 @@ window.addEventListener('DOMContentLoaded', () => {
   setupEventListeners();
   initMobileNavigation();
   initInteractiveMap();
+  // Phone map-first layout + radar timeline + layer toggles (needs Leaflet; otherwise the
+  // scrolling layout above stays as the fallback).
+  initMapFirstLayout();
 
   // 1. Immediately update UI synchronously on millisecond 0 with live clock time
   updateUI();
@@ -3104,7 +4457,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const inputO = document.getElementById('inputOrigin');
     if (inputO) inputO.value = sharedName;
     if (originMarker) originMarker.setLatLng([paramLat, paramLon]);
-    if (mapInstance) mapInstance.setView([paramLat, paramLon], 15);
+    if (mapInstance) mapInstance.setView([paramLat, paramLon], appState.mapFocus === 'radar' ? 9 : 15);
     fetchLiveOpenMeteo(paramLat, paramLon, sharedName);
   } else {
     // Automatically detect real user location: Cached -> Precision GPS -> IP Geolocation Fallback
