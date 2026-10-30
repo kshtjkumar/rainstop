@@ -186,19 +186,36 @@ class RainEngine {
   }
 
   resize() {
-    this.width = window.innerWidth;
-    this.height = window.innerHeight;
-    this.canvas.width = this.width;
-    this.canvas.height = this.height;
+    // Mobile browsers fire resize continuously while scrolling (address bar shows/hides).
+    // Re-allocating the canvas each time makes scrolling stutter, so ignore small
+    // height-only changes.
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (this.width === w && this.height && Math.abs(this.height - h) < 160) return;
+    const crossedPhoneWidth = this.width !== undefined && (this.width <= 768) !== (w <= 768);
+    this.width = w;
+    this.height = h;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    // Rotating a phone across the 768px breakpoint changes the drop budget
+    if (crossedPhoneWidth && this.intensity) this.setIntensity(this.intensity, this.windSpeed);
   }
 
   setIntensity(level, windSpeed = 15) {
     this.intensity = level;
+    this.windSpeed = windSpeed;
     this.wind = (windSpeed - 10) * 0.15;
-    if (level === 'heavy') this.maxDrops = 320;
-    else if (level === 'moderate') this.maxDrops = 180;
-    else if (level === 'light') this.maxDrops = 80;
-    else if (level === 'dry_now') this.maxDrops = 0; // 100% zero raindrops when dry!
+    let drops = 0;
+    if (level === 'heavy') drops = 320;
+    else if (level === 'moderate') drops = 180;
+    else if (level === 'light') drops = 80;
+    // Phones: far fewer drops (full-screen redraw every frame is costly); none at all
+    // if the user asked the OS to reduce motion.
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion) drops = 0;
+    else if (this.width <= 768) drops = Math.round(drops * 0.3);
+    if (drops === this.maxDrops && this.drops.length === drops) return; // unchanged
+    this.maxDrops = drops;
     this.initDrops();
   }
 
@@ -227,6 +244,13 @@ class RainEngine {
   }
 
   animate() {
+    // Skip drawing while the app is in the background or there is nothing to draw.
+    if (document.hidden || (this.drops.length === 0 && this.splashes.length === 0)) {
+      if (!this.cleared) { this.ctx.clearRect(0, 0, this.width, this.height); this.cleared = true; }
+      requestAnimationFrame(() => this.animate());
+      return;
+    }
+    this.cleared = false;
     this.ctx.clearRect(0, 0, this.width, this.height);
 
     this.ctx.lineWidth = 1.5;
@@ -2718,6 +2742,12 @@ function setupEventListeners() {
     });
   }
 
+  if (labsModal) {
+    // Tap on the dark backdrop closes the popup
+    labsModal.addEventListener('click', (e) => {
+      if (e.target === labsModal) labsModal.classList.remove('open');
+    });
+  }
   if (btnCloseLabs && labsModal) {
     btnCloseLabs.addEventListener('click', () => {
       labsModal.classList.remove('open');

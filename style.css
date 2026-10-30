@@ -1850,28 +1850,43 @@ body.rain-theme {
     --safe-bottom: env(safe-area-inset-bottom, 8px);
   }
 
+  /* Normal vertical scrolling on phones. (The old fixed one-screen layout clipped
+     everything that didn't fit, with no way to scroll to it.) */
   html, body {
-    height: 100% !important;
-    overflow: hidden !important; /* Zero scrolling on mobile primary screen */
+    height: auto !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
     -webkit-tap-highlight-color: transparent;
   }
 
-  .app-container {
-    height: 100dvh !important;
-    max-height: 100dvh !important;
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: space-between !important;
-    padding: var(--safe-top) 10px var(--safe-bottom) 10px !important;
-    overflow: hidden !important;
+  /* Performance: blurring the glass panels over the full-screen rain animation forces
+     the GPU to re-blur every frame, which makes phones stutter or freeze. */
+  * {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 
-  /* Compact Mobile Header */
+  :root {
+    --card-bg: rgba(13, 20, 36, 0.94);
+  }
+
+  .app-container {
+    min-height: 100dvh !important;
+    height: auto !important;
+    max-height: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    padding: var(--safe-top) 10px calc(var(--safe-bottom) + 72px) 10px !important;
+    overflow: visible !important;
+  }
+
+  /* Compact Mobile Header: logo row + horizontally scrollable button row */
   .app-header {
-    flex-direction: row !important;
-    align-items: center !important;
-    justify-content: space-between !important;
-    padding: 2px 0 4px 0 !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+    padding: 8px 10px !important;
     margin-bottom: 0 !important;
   }
 
@@ -1880,10 +1895,6 @@ body.rain-theme {
   }
 
   .logo-subtitle,
-  .btn-alert,
-  .btn-labs,
-  .btn-report,
-  .app-footer,
   .mobile-quick-strip,
   .mobile-tab-bar {
     display: none !important;
@@ -1891,8 +1902,27 @@ body.rain-theme {
 
   .header-controls {
     display: flex !important;
+    flex-wrap: nowrap !important;
     gap: 6px !important;
     align-items: center !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px !important;
+  }
+
+  .header-controls::-webkit-scrollbar {
+    display: none;
+  }
+
+  .header-controls > * {
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  .app-footer {
+    font-size: 10px !important;
+    padding: 8px 4px !important;
   }
 
   .gps-engine-chip {
@@ -1903,17 +1933,15 @@ body.rain-theme {
   .btn-icon {
     padding: 4px 8px !important;
     font-size: 11px !important;
-    min-height: 32px !important;
+    min-height: 36px !important;
   }
 
-  /* 1-Page Cockpit Vertical Flow */
+  /* Vertical flow: leave-time card, then avatar + controls */
   .cockpit-grid {
     display: flex !important;
     flex-direction: column !important;
-    flex: 1 !important;
-    min-height: 0 !important;
-    gap: 6px !important;
-    overflow: hidden !important;
+    gap: 8px !important;
+    overflow: visible !important;
   }
 
   /* SECTION 1: Sleek Rain & Clearance Banner (Top) */
@@ -1931,12 +1959,37 @@ body.rain-theme {
     margin: 0 !important;
   }
 
+  #colRadar {
+    gap: 8px !important;
+  }
+
   #colRadar .card-header,
-  #colRadar .minutely-trend,
-  #colRadar .weathernext3-box,
-  #colRadar .advice-card,
   #colRadar .stats-row {
     display: none !important;
+  }
+
+  .advice-card {
+    padding: 10px 12px !important;
+    margin: 0 !important;
+  }
+
+  .advice-headline {
+    font-size: 15px !important;
+  }
+
+  .advice-desc {
+    font-size: 12.5px !important;
+    line-height: 1.45 !important;
+  }
+
+  .weathernext3-strip {
+    gap: 6px !important;
+  }
+
+  .horizon-card {
+    min-width: 0 !important;
+    padding: 6px 4px !important;
+    font-size: 10.5px !important;
   }
 
   .sky-condition-banner {
@@ -1962,45 +2015,45 @@ body.rain-theme {
     margin: 0 !important;
   }
 
+  /* "When can I leave?" box: full text, wraps instead of being cut off */
   .stop-countdown-box {
-    display: flex !important;
-    align-items: center !important;
-    justify-content: space-between !important;
-    padding: 4px 8px !important;
-    margin: 3px 0 0 0 !important;
-    background: rgba(15, 23, 42, 0.6) !important;
-    border-radius: 8px !important;
+    padding: 10px 10px !important;
+    margin: 6px 0 0 0 !important;
+    border-radius: 10px !important;
   }
 
-  .countdown-caption,
-  .timeline-bar-wrap,
-  .timeline-labels {
-    display: none !important;
+  .countdown-caption {
+    font-size: 10px !important;
   }
 
   .countdown-timer {
     display: flex !important;
     align-items: baseline !important;
-    gap: 4px !important;
-    font-size: 18px !important;
+    justify-content: center !important;
+    gap: 6px !important;
   }
 
   .timer-num {
-    font-size: 22px !important;
+    font-size: 34px !important;
     font-weight: 800 !important;
     color: var(--primary-cyan) !important;
   }
 
   .timer-unit {
-    font-size: 9.5px !important;
-    color: var(--text-dim) !important;
+    font-size: 11px !important;
   }
 
   .stop-time-clock {
-    font-size: 11px !important;
-    font-weight: 700 !important;
-    color: var(--tier-0) !important;
-    margin: 0 !important;
+    font-size: 12.5px !important;
+    line-height: 1.4 !important;
+    margin: 4px 0 6px 0 !important;
+    overflow-wrap: anywhere;
+  }
+
+  .timeline-labels {
+    flex-wrap: wrap !important;
+    gap: 4px 8px !important;
+    font-size: 10px !important;
   }
 
   /* SECTION 2: Centerpiece Soak Simulator (Avatar & Controls) */
@@ -2008,19 +2061,15 @@ body.rain-theme {
     order: 2 !important;
     display: flex !important;
     flex-direction: column !important;
-    flex: 1 !important;
-    min-height: 0 !important;
     width: 100% !important;
     margin: 0 !important;
   }
 
   .avatar-cockpit {
-    flex: 1 !important;
-    min-height: 0 !important;
     display: flex !important;
     flex-direction: column !important;
-    justify-content: space-between !important;
-    padding: 6px 10px !important;
+    gap: 6px !important;
+    padding: 8px 10px !important;
     margin: 0 !important;
     border-radius: var(--radius-md) !important;
   }
@@ -2030,7 +2079,7 @@ body.rain-theme {
     display: none !important;
   }
 
-  .tier-banner {
+  .consequence-banner {
     display: flex !important;
     align-items: center !important;
     gap: 8px !important;
@@ -2055,10 +2104,9 @@ body.rain-theme {
   }
 
   .avatar-stage {
-    flex: 1 !important;
-    min-height: 140px !important;
-    max-height: 260px !important;
-    height: auto !important;
+    height: 230px !important;
+    min-height: 0 !important;
+    max-height: none !important;
     padding: 0 !important;
     display: flex !important;
     align-items: center !important;
@@ -2160,7 +2208,7 @@ body.rain-theme {
     font-size: 12px !important;
   }
 
-  .gear-checkbox-card .g-name {
+  .gear-checkbox-card .g-title {
     font-size: 9.5px !important;
     font-weight: 700 !important;
   }
@@ -2171,10 +2219,15 @@ body.rain-theme {
   }
 
   /* SECTION 3: 1-Page Mobile Bottom Action Dock */
+  /* Always-visible bottom dock (page content scrolls underneath) */
   .mobile-action-dock {
     display: flex !important;
     gap: 8px !important;
-    padding: 2px 0 0 0 !important;
+    position: fixed !important;
+    left: 10px !important;
+    right: 10px !important;
+    bottom: calc(var(--safe-bottom) + 6px) !important;
+    padding: 0 !important;
     margin: 0 !important;
     z-index: 100 !important;
   }
@@ -2220,8 +2273,6 @@ body.rain-theme {
     width: 100% !important;
     max-height: 84vh !important;
     background: rgba(15, 23, 42, 0.98) !important;
-    backdrop-filter: blur(28px) !important;
-    -webkit-backdrop-filter: blur(28px) !important;
     border-top: 1px solid rgba(56, 189, 248, 0.4) !important;
     border-radius: 20px 20px 0 0 !important;
     z-index: 10001 !important;
@@ -2229,6 +2280,7 @@ body.rain-theme {
     transform: translateY(105%) !important;
     transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1) !important;
     overflow-y: auto !important;
+    overscroll-behavior: contain !important; /* don't scroll the page behind the sheet */
     -webkit-overflow-scrolling: touch !important;
     box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.85) !important;
   }
@@ -2271,11 +2323,44 @@ body.rain-theme {
     inset: 0 !important;
     background: rgba(0, 0, 0, 0.65) !important;
     z-index: 10000 !important;
-    backdrop-filter: blur(4px) !important;
   }
 
   .route-sheet-backdrop.active {
     display: block !important;
+  }
+
+  /* Labs popup: scrollable, starts at the top so the × button is always reachable */
+  .modal-overlay {
+    height: 100dvh !important;
+    width: 100% !important;
+    align-items: flex-start !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    padding: calc(var(--safe-top) + 12px) 0 24px !important;
+  }
+
+  .modal-content {
+    padding: 16px !important;
+  }
+
+  /* Performance: stop infinite CSS/SVG animations and filters on phones */
+  .forcefield-pulse,
+  .body-part.soaked,
+  .splash-drop,
+  .logo-icon {
+    animation: none !important;
+  }
+
+  .umbrella-gear,
+  .raincoat-gear,
+  .boots-gear,
+  .bagcover-gear,
+  .car-cabin-gear,
+  .scooter-gear,
+  .human-avatar-svg,
+  .body-part.damp,
+  .body-part.soaked {
+    filter: none !important;
   }
 
   .toast-container {
@@ -2349,5 +2434,12 @@ body.rain-theme {
     flex-direction: column;
     gap: 6px;
     text-align: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }

@@ -3,7 +3,7 @@
  * Network-first strategy: Always fetch live freshest assets; fall back to cache when offline.
  */
 
-const CACHE_NAME = 'rainstop-cache-v8';
+const CACHE_NAME = 'rainstop-cache-v9';
 const STATIC_ASSETS = [
   './',
   './index.html',
