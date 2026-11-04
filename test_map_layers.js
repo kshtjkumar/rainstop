@@ -316,9 +316,10 @@ assert(LM.elements.mTemp && LM.elements.mTemp.textContent === '31°', 'phone top
   assert(!/\.append\(|\.replaceChildren\(|\.remove\(\)/.test(APP_SRC.slice(APP_SRC.indexOf('8.6 RAIN MAP'), APP_SRC.indexOf('9. WEB AUDIO'))), 'new code avoids append()/replaceChildren()/remove()');
   const fonts = (CSS_SRC.match(/font-family:[^;]+;/g) || []).concat(CSS_SRC.match(/font:[^;]+;/g) || []).join(' ');
   assert(!/(Roboto Mono|Space|Poppins|Helvetica Neue)/.test(sec) && /var\(--font-mono\)/.test(sec), 'MAP-FIRST section uses the Inter / JetBrains Mono tokens', fonts.length);
-  assert(HTML_SRC.includes('style.css?v=8.1') && HTML_SRC.includes('app.js?v=8.1'), 'asset cache-buster bumped to v8.1');
+  assert(HTML_SRC.includes('style.css?v=8.2') && HTML_SRC.includes('app.js?v=8.2'), 'asset cache-buster bumped to v8.2');
   const sw = fs.readFileSync(path.join(__dirname, 'sw.js'), 'utf8');
-  assert(sw.includes('rainstop-cache-v11') && /gibs\\\.earthdata/.test(sw) && /tile\\\.openstreetmap/.test(sw) && !/cartocdn/.test(sw), 'sw.js v11 skips caching map/satellite tiles');
+  assert(sw.includes('rainstop-cache-v12') && /gibs\\\.earthdata/.test(sw) && /tile\\\.openstreetmap/.test(sw) && !/cartocdn/.test(sw), 'sw.js v12 skips caching map/satellite tiles');
+  assert(/@media \(max-width: 768px\)[\s\S]*input\[type="text"\][\s\S]*font-size: 16px !important/.test(CSS_SRC), 'phone text fields are 16px (no iOS focus zoom)');
   assert(!/cartocdn/.test(APP_SRC), 'no CARTO tiles (they now require an API key)');
 
   console.log(`\n==========================================\n🎉 TEST SUMMARY: ${passed} PASSED, ${failed} FAILED\n==========================================`);
