@@ -28,7 +28,7 @@
   <!-- Leaflet Interactive Map Engine -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="style.css?v=8.2" />
+  <link rel="stylesheet" href="style.css?v=8.3" />
 </head>
 <body class="rain-theme">
   <!-- Offline Network Banner -->
@@ -211,6 +211,9 @@
               <p id="skySubtitle">Bucket rain. Sideways gusts.</p>
             </div>
           </div>
+
+          <!-- Active cyclone near you (GDACS, filled by app.js; never from model lows) -->
+          <div class="rs-cyclone-alert" id="cycloneAlert" role="status" hidden></div>
 
           <!-- The Core Question: When will it stop? -->
           <div class="stop-countdown-box">
@@ -648,7 +651,7 @@
     <!-- Footer / Status Bar -->
     <footer class="app-footer">
       <div class="footer-left">
-        <span class="pulse-indicator"></span> Forecast: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> multi-model + ensemble (CC BY 4.0) • Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a> • Satellite: <a href="https://earthdata.nasa.gov/gibs" target="_blank" rel="noopener">NASA GIBS</a> / JMA Himawari • Map: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
+        <span class="pulse-indicator"></span> Forecast: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> multi-model + ensemble (CC BY 4.0) • Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a> • Satellite: <a href="https://earthdata.nasa.gov/gibs" target="_blank" rel="noopener">NASA GIBS</a> / JMA Himawari • Cyclones: <a href="https://www.gdacs.org/" target="_blank" rel="noopener">GDACS</a> (official warnings: <a href="https://mausam.imd.gov.in/" target="_blank" rel="noopener">IMD</a>) • Map: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
       </div>
       <div class="footer-right">
         <span>Desktop Companion for Electron</span>
@@ -698,6 +701,7 @@
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" stroke="currentColor" stroke-width="1.8"/></svg>
       </button>
       <button class="m-icon-btn m-btn-text" id="mBtnRoute" type="button" aria-label="Show trip route" title="Show trip route">Trip</button>
+      <button class="m-icon-btn m-btn-text" id="mBtnIndia" type="button" aria-label="Show all India" title="All India">India</button>
     </div>
 
     <div class="m-layers-panel" id="mLayersPanel" role="group" aria-label="Map layers" hidden></div>
@@ -713,6 +717,7 @@
           <div class="m-peek-text">
             <span class="m-peek-line" id="mPeekLine">Loading forecast…</span>
             <span class="m-peek-sky" id="mPeekSky"></span>
+            <span class="m-peek-alert" id="mPeekAlert" hidden></span>
           </div>
         </div>
       </div>
@@ -722,6 +727,6 @@
     </section>
   </div>
 
-  <script src="app.js?v=8.2"></script>
+  <script src="app.js?v=8.3"></script>
 </body>
 </html>

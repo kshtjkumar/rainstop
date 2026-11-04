@@ -143,7 +143,7 @@ const lv = v => A.uvLevel(v) && A.uvLevel(v).label;
 assert(lv(0) === 'Low' && lv(2.4) === 'Low' && lv(3) === 'Moderate' && lv(5) === 'Moderate' && lv(6) === 'High' && lv(7) === 'High' && lv(8) === 'Very high' && lv(10) === 'Very high' && lv(11) === 'Extreme' && A.uvLevel(null) === null, 'UV level boundaries', [0, 2.4, 3, 5, 6, 7, 8, 10, 11].map(lv));
 
 const cards = A.metricCards(met, { status: 'none', nearby: true, frameTime: NOW - 900 }, NOW);
-assert(cards.map(c => c.id).join() === 'feels,rain,wind,humidity,uv,cloud,sun,radar', 'metric card ids', cards.map(c => c.id));
+assert(cards.map(c => c.id).join() === 'feels,rain,wind,humidity,uv,cloud,sun,pressure,radar', 'metric card ids', cards.map(c => c.id));
 const byId = Object.fromEntries(cards.map(c => [c.id, c]));
 assert(byId.feels.value === '36°' && byId.feels.sub === 'Actual 31°', 'feels-like card', byId.feels);
 assert(byId.wind.arrowDeg === 45 && /SW/.test(byId.wind.sub) && /gusts 41/.test(byId.wind.sub), 'wind card: compass, gusts, arrow = direction + 180°', byId.wind);
@@ -154,9 +154,9 @@ assert(byId.radar.value === 'Rain nearby' && /15 min old/.test(byId.radar.sub), 
 const evening = A.nextSunEvent(met, NOW + 10000);
 assert(evening && evening.kind === 'sunrise' && evening.t === NOW + 66000, 'after sunset the next event is tomorrow\'s sunrise', evening);
 const empty = A.metricCards(null, null, NOW);
-assert(empty.length === 8 && empty.every(c => typeof c.value === 'string') && empty.find(c => c.id === 'radar').value === 'Loading…', 'no metrics → 8 placeholder cards', empty.map(c => c.value));
-assert(A.metricCards(met, { status: 'echo', frameTime: NOW - 300 }, NOW)[7].value === 'Rain here', 'radar echo → "Rain here"');
-assert(/patchy/.test(A.metricCards(met, { status: 'none', frameTime: NOW - 300 }, NOW)[7].sub), 'no echo flagged as patchy coverage (never "dry")');
+assert(empty.length === 9 && empty.every(c => typeof c.value === 'string') && empty.find(c => c.id === 'radar').value === 'Loading…', 'no metrics → 9 placeholder cards', empty.map(c => c.value));
+assert(A.metricCards(met, { status: 'echo', frameTime: NOW - 300 }, NOW).find(c => c.id === 'radar').value === 'Rain here', 'radar echo → "Rain here"');
+assert(/patchy/.test(A.metricCards(met, { status: 'none', frameTime: NOW - 300 }, NOW).find(c => c.id === 'radar').sub), 'no echo flagged as patchy coverage (never "dry")');
 
 // ---------------------------------------------------------------------------
 console.log('\n[5] Hourly chart model');
@@ -280,7 +280,7 @@ assert(LM.elements.mTemp && LM.elements.mTemp.textContent === '31°', 'phone top
   let a0Url = '';
   const D = loadApp(async (url) => {
     const ok = (json) => ({ ok: true, json: async () => json });
-    if (url.includes('ensemble-api') || url.includes('models=') || url.includes('rainviewer')) throw new Error('down');
+    if (url.includes('ensemble-api') || url.includes('models=') || url.includes('rainviewer') || url.includes('gdacs')) throw new Error('down');
     a0Url = url;
     return ok({
       current: { time: nowSec, temperature_2m: 28, apparent_temperature: 33, relative_humidity_2m: 70, wind_speed_10m: 9, wind_gusts_10m: 20, wind_direction_10m: 90, uv_index: 4, cloud_cover: 50, is_day: 1, weather_code: 3 },
@@ -316,9 +316,9 @@ assert(LM.elements.mTemp && LM.elements.mTemp.textContent === '31°', 'phone top
   assert(!/\.append\(|\.replaceChildren\(|\.remove\(\)/.test(APP_SRC.slice(APP_SRC.indexOf('8.6 RAIN MAP'), APP_SRC.indexOf('9. WEB AUDIO'))), 'new code avoids append()/replaceChildren()/remove()');
   const fonts = (CSS_SRC.match(/font-family:[^;]+;/g) || []).concat(CSS_SRC.match(/font:[^;]+;/g) || []).join(' ');
   assert(!/(Roboto Mono|Space|Poppins|Helvetica Neue)/.test(sec) && /var\(--font-mono\)/.test(sec), 'MAP-FIRST section uses the Inter / JetBrains Mono tokens', fonts.length);
-  assert(HTML_SRC.includes('style.css?v=8.2') && HTML_SRC.includes('app.js?v=8.2'), 'asset cache-buster bumped to v8.2');
+  assert(HTML_SRC.includes('style.css?v=8.3') && HTML_SRC.includes('app.js?v=8.3'), 'asset cache-buster bumped to v8.3');
   const sw = fs.readFileSync(path.join(__dirname, 'sw.js'), 'utf8');
-  assert(sw.includes('rainstop-cache-v12') && /gibs\\\.earthdata/.test(sw) && /tile\\\.openstreetmap/.test(sw) && !/cartocdn/.test(sw), 'sw.js v12 skips caching map/satellite tiles');
+  assert(sw.includes('rainstop-cache-v13') && /gibs\\\.earthdata/.test(sw) && /tile\\\.openstreetmap/.test(sw) && !/cartocdn/.test(sw), 'sw.js v13 skips caching map/satellite tiles');
   assert(/@media \(max-width: 768px\)[\s\S]*input\[type="text"\][\s\S]*font-size: 16px !important/.test(CSS_SRC), 'phone text fields are 16px (no iOS focus zoom)');
   assert(!/cartocdn/.test(APP_SRC), 'no CARTO tiles (they now require an API key)');
 

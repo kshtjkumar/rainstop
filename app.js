@@ -167,9 +167,12 @@ const appState = {
   metrics: null,           // output of parseMetrics (+ lat/lon) — live conditions, never part of SCENARIOS
   grid: null,              // output of parseGridResponse (+ key, dataUrls) — experimental forecast rain map
   gridFailed: false,
-  mapFocus: 'route',       // 'route' = fit the trip on redraw | 'radar' = keep the radar view (phones)
+  mapFocus: 'route',       // 'route' = fit the trip on redraw | 'radar' = keep the radar view (phones) | 'india' = all-India view
+  india: { field: null, failure: null, failed: false },  // India-wide model wind/pressure field (section 8.65)
+  cyclones: { events: [], geom: {}, fetchedAt: 0, failed: false, failure: null, asOf: 0 }, // GDACS (section 8.66)
   layers: (() => {
-    const defaults = { radar: true, satellite: false, grid: true, route: true };
+    // Wind + pressure default OFF: each India fetch is 289 Open-Meteo calls (shared campus IPs).
+    const defaults = { radar: true, satellite: false, grid: true, route: true, wind: false, pressure: false, cyclones: true };
     try {
       const saved = JSON.parse(localStorage.getItem('rainstop_layers_v1') || 'null');
       if (saved && typeof saved === 'object') {
@@ -471,8 +474,8 @@ async function fetchAndDrawRoute() {
       });
       if (appState.layers.route) routeLineLayer.addTo(mapInstance);
 
-      // On the phone radar view the map stays put; "Trip" fits the route on demand.
-      if (appState.mapFocus !== 'radar') fitRouteBounds();
+      // On the phone radar view / all-India view the map stays put; "Trip" fits the route on demand.
+      if (appState.mapFocus === 'route') fitRouteBounds();
     } else {
       drawFallbackRoute();
     }
@@ -500,7 +503,7 @@ function drawFallbackRoute() {
       opacity: 0.8
     });
     if (appState.layers.route) routeLineLayer.addTo(mapInstance);
-    if (appState.mapFocus !== 'radar') fitRouteBounds();
+    if (appState.mapFocus === 'route') fitRouteBounds();
   }
 }
 
@@ -1688,6 +1691,8 @@ function updateUI() {
   // 13. Conditions card (+ phone top bar) and the map-first sheet's peek summary
   renderMetrics();
   renderMobileSummary(plan, nowView);
+  // 14. Active-cyclone banner (GDACS events only, never model lows)
+  renderCycloneAlert();
 }
 
 // ============================================================================
@@ -1837,6 +1842,13 @@ function getPhotonIcon(props) {
   return '📍';
 }
 
+// The user picked a new trip (autocomplete, swap, route chip): leave the all-India view.
+// Desktop refits the route; phones keep the radar view (route fit only via the Route button).
+function focusNewTrip() {
+  if (!isMobileMap()) appState.mapFocus = 'route';
+  else if (appState.mapFocus === 'india') appState.mapFocus = 'radar';
+}
+
 function setupPhotonAutocomplete(inputId, dropdownId, clearBtnId, stateKey) {
   const input = document.getElementById(inputId);
   const dropdown = document.getElementById(dropdownId);
@@ -1945,6 +1957,7 @@ function setupPhotonAutocomplete(inputId, dropdownId, clearBtnId, stateKey) {
       }
       dropdown.classList.remove('open');
       document.querySelectorAll('.route-chip').forEach(c => c.classList.remove('active'));
+      focusNewTrip();
       fetchAndDrawRoute();
     });
     return row;
@@ -2018,6 +2031,15 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
   }
 }
 
+// fetchWithTimeout only covers the headers: bound the body read too (large payloads).
+function readJsonWithTimeout(res, timeoutMs = 15000) {
+  let id = null;
+  const timer = new Promise((_, reject) => {
+    id = setTimeout(() => reject(new Error(`body read timed out after ${timeoutMs} ms`)), timeoutMs);
+  });
+  return Promise.race([Promise.resolve().then(() => res.json()), timer]).finally(() => clearTimeout(id));
+}
+
 let lastSuccessfulFetchTime = 0;
 
 // A ground report only changes the "now" state; the future still comes from the forecast,
@@ -2056,7 +2078,10 @@ async function fetchLiveOpenMeteo(lat = 26.5123, lon = 80.2329, placeName = "IIT
     // NOTE: outside Central Europe / North America, Open-Meteo's minutely_15 data is
     // interpolated from hourly model output (not radar), so this is a model forecast.
     // The extra current/hourly/daily fields feed the conditions card (parseMetrics).
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weather_code,wind_speed_10m,apparent_temperature,relative_humidity_2m,wind_gusts_10m,wind_direction_10m,uv_index,cloud_cover,is_day&minutely_15=precipitation,weather_code&hourly=precipitation,weather_code,temperature_2m,precipitation_probability&daily=sunrise,sunset,uv_index_max&forecast_days=2&timeformat=unixtime&timezone=auto`;
+    // past_hours=3: hourly starts ≥ 3 h before now (3-h pressure tendency just after local
+    // midnight); forecast_hours=48 keeps it from growing to 16 days. minutely_15 / daily are
+    // unaffected, and every hourly consumer selects by time, never by position.
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weather_code,wind_speed_10m,apparent_temperature,relative_humidity_2m,wind_gusts_10m,wind_direction_10m,uv_index,cloud_cover,is_day,pressure_msl&minutely_15=precipitation,weather_code&hourly=precipitation,weather_code,temperature_2m,precipitation_probability,pressure_msl&daily=sunrise,sunset,uv_index_max&forecast_days=2&past_hours=3&forecast_hours=48&timeformat=unixtime&timezone=auto`;
     const res = await fetchWithTimeout(url, {}, 6500);
     if (!res.ok) throw new Error("API error: " + res.status);
     const json = await res.json();
@@ -2391,6 +2416,10 @@ async function fetchForecastExtras(lat, lon) {
   }
   // Experimental forecast rain map (no-op without a map / when the layer is off; 30-min TTL)
   jobs.push(refreshForecastGrid().catch(err => console.warn('Forecast grid refresh failed:', err)));
+  // India-wide wind / pressure field (no-op unless a layer is on at India zoom; 60-min TTL)
+  jobs.push(refreshIndiaField().catch(err => console.warn('India model refresh failed:', err)));
+  // GDACS active cyclones (30-min TTL; never throws)
+  jobs.push(refreshCyclones().catch(err => console.warn('Cyclone refresh failed:', err)));
   await Promise.all(jobs);
 }
 
@@ -2586,7 +2615,8 @@ function buildTimelineFrames(radarMeta, grid, nowSec = Date.now() / 1000) {
       if (added >= GRID_MAX_HOURS || !(t > lastRadarT) || !(t > nowSec)) return;
       added++;
       const h = Math.max(1, Math.round((t - nowSec) / 3600));
-      frames.push({ kind: 'model', t, hourIdx, label: fmtClock(new Date(t * 1000)), rel: `+${h} h` });
+      // src: 'grid' = local 7 × 7 rain grid, 'india' = India-wide wind/pressure field
+      frames.push({ kind: 'model', t, hourIdx, src: grid.src || 'grid', label: fmtClock(new Date(t * 1000)), rel: `+${h} h` });
     });
   }
   frames.sort((a, b) => a.t - b.t);
@@ -2624,6 +2654,16 @@ function parseMetrics(json, nowSec = Date.now() / 1000) {
     }
   }
   const isDay = num(cur.is_day);
+  // 3-hour pressure tendency: latest hour at/before now vs 3 h earlier (hourly MSL values are
+  // instantaneous). null when the series doesn't reach back 3 h.
+  let pressureTrend3h = null;
+  let i0 = -1;
+  hTime.forEach((t, i) => { if (Number(t) <= nowSec) i0 = i; });
+  if (i0 >= 3) {
+    const pNow = at(hourly.pressure_msl, i0);
+    const pThen = at(hourly.pressure_msl, i0 - 3);
+    if (pNow !== null && pThen !== null) pressureTrend3h = +(pNow - pThen).toFixed(1);
+  }
   return {
     at: num(cur.time),
     tempC: num(cur.temperature_2m),
@@ -2640,6 +2680,8 @@ function parseMetrics(json, nowSec = Date.now() / 1000) {
     sunset: at(daily.sunset, 0),
     sunriseNext: at(daily.sunrise, 1),
     sunsetNext: at(daily.sunset, 1),
+    pressureHpa: num(cur.pressure_msl),
+    pressureTrend3h,
     hourly: hours
   };
 }
@@ -2687,7 +2729,22 @@ function radarMetricCard(radar, nowSec) {
   return { ...card, value: 'Unavailable', sub: 'RainViewer' };
 }
 
-// Metric cards for the conditions grid. Always 8 cards; missing values show "–".
+// Sea-level pressure + 3-h tendency card. Falling ≥ 4 hPa / 3 h is flagged (warn).
+function pressureMetricCard(m) {
+  const card = { id: 'pressure', label: 'Pressure', value: '–', sub: '', tone: 'neutral' };
+  if (!m || !isNum(m.pressureHpa)) return card;
+  card.value = `${Math.round(m.pressureHpa)} hPa`;
+  const d = m.pressureTrend3h;
+  if (isNum(d)) {
+    card.sub = Math.abs(d) < 1 ? 'steady' : `${d < 0 ? 'falling' : 'rising'} ${Math.abs(d).toFixed(1)} hPa / 3 h`;
+    if (d <= -4) card.tone = 'warn';
+  } else {
+    card.sub = 'sea level';
+  }
+  return card;
+}
+
+// Metric cards for the conditions grid. Always 9 cards; missing values show "–".
 function metricCards(m, radar, nowSec = Date.now() / 1000) {
   const dash = '–';
   const has = k => !!m && isNum(m[k]);
@@ -2728,6 +2785,7 @@ function metricCards(m, radar, nowSec = Date.now() / 1000) {
       id: 'sun', label: sun ? (sun.kind === 'sunset' ? 'Sunset' : 'Sunrise') : 'Sun',
       value: sun ? clock(sun.t) : dash, sub: sunSub, tone: 'neutral', next: sun ? sun.kind : null
     },
+    pressureMetricCard(m),
     radarMetricCard(radar, nowSec)
   ];
 }
@@ -2811,7 +2869,9 @@ const timelineState = { frames: [], index: -1, nowIndex: -1, playing: false, tim
 
 function ensureMapPanes() {
   if (!mapInstance || typeof mapInstance.createPane !== 'function') return false;
-  [['rsSat', 250], ['rsGrid', 340], ['rsRadar', 350]].forEach(([name, z]) => {
+  // India layers: isobars + wind arrows above radar, cyclone zones above them, labels above
+  // the route (overlayPane 400) but under the pins / cyclone markers (markerPane 600).
+  [['rsSat', 250], ['rsGrid', 340], ['rsRadar', 350], ['rsIsobar', 355], ['rsWind', 360], ['rsCyclone', 370], ['rsMapLabel', 450]].forEach(([name, z]) => {
     if (mapInstance.getPane(name)) return;
     const pane = mapInstance.createPane(name);
     pane.style.zIndex = String(z);
@@ -2975,7 +3035,7 @@ function renderTimelineLabel(f) {
     tag.className = `rs-source-tag ${f.kind === 'radar' ? 'is-radar' : 'is-model'}`;
     tag.textContent = f.kind === 'radar'
       ? (appState.gridFailed && appState.layers.grid ? 'RADAR · Forecast map unavailable' : 'RADAR')
-      : 'FORECAST MODEL · ~10–25 km, not radar';
+      : (indiaLayersOn() && isIndiaZoom() ? 'MODEL · wind & pressure · 2° grid' : 'FORECAST MODEL · ~10–25 km, not radar');
   }
   if (legendText) legendText.textContent = 'Light · Mod · Heavy · Extreme (approx.)';
 }
@@ -2987,6 +3047,7 @@ function showFrame(i) {
     radarFrameLayers.forEach(layer => layer.setOpacity(0));
     hideGridOverlay();
     renderTimelineLabel(null);
+    renderIndiaLayers(null);
     return;
   }
   const idx = Math.max(0, Math.min(frames.length - 1, Number.isFinite(i) ? i : timelineState.nowIndex));
@@ -2994,8 +3055,11 @@ function showFrame(i) {
   const f = frames[idx];
   if (f.kind === 'radar') radarLayerFor(f.path);
   radarFrameLayers.forEach((layer, path) => layer.setOpacity(f.kind === 'radar' && path === f.path ? RADAR_OPACITY : 0));
-  if (f.kind === 'model') showGridHour(f.hourIdx);
+  // The local 7 × 7 rain grid covers ~90 km: only drawn when zoomed in (or zoom unknown).
+  const z = mapZoom();
+  if (f.kind === 'model' && f.src !== 'india' && (z === null || z >= LOCAL_GRID_MIN_ZOOM)) showGridHour(f.hourIdx);
   else hideGridOverlay();
+  renderIndiaLayers(f);
   renderTimelineLabel(f);
 }
 
@@ -3009,9 +3073,14 @@ function rebuildTimeline() {
   const gridOk = appState.grid && appState.grid.dataUrls && appState.grid.dataUrls.length
     && appState.grid.key === gridKeyFor(buildGridPoints(o.lat, o.lon)); // never show another area's grid
   const grid = gridOk ? appState.grid : null;
+  // Model hours: the local rain grid when on + loaded, else the India field's hours
+  // (India layers on, field usable, India zoom).
+  let modelSrc = appState.layers.grid ? grid : null;
+  const field = appState.india && appState.india.field;
+  if (!modelSrc && indiaLayersOn() && indiaFieldUsable(field) && isIndiaZoom()) modelSrc = { times: field.times, src: 'india' };
   const { frames, defaultIndex } = buildTimelineFrames(
     appState.layers.radar ? appState.radarMeta : null,
-    appState.layers.grid ? grid : null,
+    modelSrc,
     Date.now() / 1000
   );
   timelineState.frames = frames;
@@ -3234,6 +3303,9 @@ const LAYER_DEFS = [
   { key: 'radar', title: 'Radar', sub: 'RainViewer · past 2 h' },
   { key: 'grid', title: 'Forecast rain', sub: 'Experimental · model, next 6 h' },
   { key: 'satellite', title: 'Satellite clouds', sub: 'IR clouds, ~1–2 h delay' },
+  { key: 'wind', title: 'Wind', sub: 'Model · India 2° grid · next 6 h' },
+  { key: 'pressure', title: 'Pressure & lows', sub: 'Isobars 2 hPa · model, not IMD' },
+  { key: 'cyclones', title: 'Cyclones', sub: 'GDACS · active storms' },
   { key: 'route', title: 'Trip route', sub: 'A/B pins and path' }
 ];
 
@@ -3260,7 +3332,7 @@ function buildLayerToggles(container) {
     row.appendChild(text);
     container.appendChild(row);
     box.addEventListener('change', () => setMapLayer(def.key, box.checked));
-    layerToggleInputs.push({ key: def.key, box });
+    layerToggleInputs.push({ key: def.key, box, sub, def });
   });
 }
 
@@ -3268,6 +3340,9 @@ function setMapLayer(key, on) {
   appState.layers[key] = !!on;
   try { localStorage.setItem(LAYERS_KEY, JSON.stringify(appState.layers)); } catch (e) { /* optional */ }
   layerToggleInputs.forEach(t => { t.box.checked = !!appState.layers[t.key]; });
+  // Wind / pressure only draw at India zoom: switching one on while zoomed in shows India.
+  const z = mapZoom();
+  if ((key === 'wind' || key === 'pressure') && on && z !== null && z > INDIA_MAX_ZOOM) showIndiaView();
   applyLayers();
 }
 
@@ -3291,7 +3366,11 @@ function applyLayers() {
   radarFrameLayers.forEach(layer => (on.radar ? addMapLayer(layer) : removeMapLayer(layer)));
   [routeLineLayer, originMarker, destMarker].forEach(layer => (on.route ? addMapLayer(layer) : removeMapLayer(layer)));
   if (on.grid) refreshForecastGrid();
+  refreshIndiaField().catch(err => console.warn('India model refresh failed:', err));
+  refreshCyclones().catch(err => console.warn('Cyclone refresh failed:', err));
   rebuildTimeline();
+  renderCycloneLayers();
+  updateLayerStatus();
 }
 
 function addDesktopLayerControl() {
@@ -3313,13 +3392,1114 @@ function addDesktopLayerControl() {
       panel.hidden = !panel.hidden;
       btn.setAttribute('aria-expanded', String(!panel.hidden));
     });
+    const indiaBtn = document.createElement('button');
+    indiaBtn.type = 'button';
+    indiaBtn.className = 'rs-layer-btn rs-india-btn';
+    indiaBtn.textContent = 'India';
+    indiaBtn.setAttribute('aria-label', 'Show all India');
+    indiaBtn.title = 'All India';
+    indiaBtn.addEventListener('click', () => showIndiaView());
     div.appendChild(btn);
+    div.appendChild(indiaBtn);
     div.appendChild(panel);
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);
     return div;
   };
   layerControl.addTo(mapInstance);
+}
+
+// ============================================================================
+// 8.65 INDIA MODEL LAYERS: 10-m WIND ARROWS, MSL ISOBARS, MODEL LOW/HIGH CENTRES
+// ============================================================================
+// One Open-Meteo multi-point request: 17 × 17 = 289 points at 2° over 6–38°N, 66–98°E,
+// hourly 10-m wind + mean-sea-level pressure for the next 8 h. Coarse global-model output:
+// "L" centres are model pressure minima, NOT IMD lows/depressions, and are labelled so.
+// Drawn as Leaflet SVG vectors (one <path> per wind-speed bin / pressure level), never
+// animated. Only at India zoom (≤ 7); the local 7 × 7 rain grid only at zoom ≥ 7.
+
+const INDIA_LAT_N = 38;
+const INDIA_LAT_S = 6;
+const INDIA_LON_W = 66;
+const INDIA_LON_E = 98;
+const INDIA_STEP = 2;
+const INDIA_HOURS = 8;
+const INDIA_TTL_MS = 60 * 60000;
+const INDIA_CACHE_MAX_MS = 90 * 60000;
+const INDIA_CACHE_KEY = 'rainstop_india_v1';
+const INDIA_MAX_ZOOM = 7;
+const LOCAL_GRID_MIN_ZOOM = 7;
+const INDIA_BOUNDS = [[6.5, 68], [35.5, 97.5]];
+// Wind-speed bins (km/h, lower bound → colour). 31 / 50 / 62 / 89 km/h are the IMD
+// depression / deep depression / cyclonic storm / severe cyclonic storm thresholds.
+const WIND_BINS = [
+  { min: 0, color: '#9ca3af' },
+  { min: 10, color: '#67e8f9' },
+  { min: 20, color: '#34d399' },
+  { min: 31, color: '#facc15' },
+  { min: 50, color: '#fb923c' },
+  { min: 62, color: '#ef4444' },
+  { min: 89, color: '#d946ef' }
+];
+
+let indiaSpecMemo = null;
+let indiaFetching = false;
+let indiaWindGroup = null;
+let indiaIsoGroup = null;
+let indiaLabelGroup = null;
+let indiaRenderKey = '';
+let indiaLegendEl = null;
+let indiaZoomBucket = null;
+let localGridZoomOn = null;
+
+// 17 × 17 lattice. Rows run north → south, columns west → east (integer degrees).
+function buildIndiaGridSpec() {
+  const nr = Math.round((INDIA_LAT_N - INDIA_LAT_S) / INDIA_STEP) + 1;
+  const nc = Math.round((INDIA_LON_E - INDIA_LON_W) / INDIA_STEP) + 1;
+  const points = [];
+  for (let row = 0; row < nr; row++) {
+    for (let col = 0; col < nc; col++) {
+      points.push({ lat: INDIA_LAT_N - row * INDIA_STEP, lon: INDIA_LON_W + col * INDIA_STEP, row, col });
+    }
+  }
+  return { latN: INDIA_LAT_N, lonW: INDIA_LON_W, step: INDIA_STEP, nr, nc, points };
+}
+
+function indiaSpec() {
+  if (!indiaSpecMemo) indiaSpecMemo = buildIndiaGridSpec();
+  return indiaSpecMemo;
+}
+
+function indiaGridUrl(spec) {
+  return `https://api.open-meteo.com/v1/forecast?latitude=${spec.points.map(p => p.lat).join(',')}&longitude=${spec.points.map(p => p.lon).join(',')}&hourly=wind_speed_10m,wind_direction_10m,pressure_msl&forecast_hours=${INDIA_HOURS}&timeformat=unixtime`;
+}
+
+// Multi-point response → { times[h], ws[h][i] km/h, wd[h][i] deg FROM, p[h][i] hPa, elev[i] m }.
+// i = row * nc + col. Missing values → NaN.
+function parseIndiaField(json, spec) {
+  if (!Array.isArray(json)) throw new Error('India grid: response is not an array');
+  if (!spec || !Array.isArray(spec.points) || json.length !== spec.points.length) {
+    throw new Error(`India grid: expected ${spec && spec.points ? spec.points.length : '?'} points, got ${json.length}`);
+  }
+  const first = json[0] && json[0].hourly;
+  if (!first || !Array.isArray(first.time) || !first.time.length) throw new Error('India grid: no time axis');
+  const num = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? NaN : Number(v);
+  const times = first.time.map(Number);
+  const series = key => times.map((_, h) => json.map(pt => {
+    const arr = pt && pt.hourly && pt.hourly[key];
+    return num(Array.isArray(arr) ? arr[h] : null);
+  }));
+  return {
+    times,
+    ws: series('wind_speed_10m'),
+    wd: series('wind_direction_10m'),
+    p: series('pressure_msl'),
+    elev: json.map(pt => num(pt && pt.elevation)),
+    fetchedAt: Date.now()
+  };
+}
+
+// Nearest model hour to tSec (within 90 min), else -1.
+function indiaHourIndex(field, tSec) {
+  if (!field || !Array.isArray(field.times)) return -1;
+  let best = -1, bestD = Infinity;
+  field.times.forEach((t, i) => {
+    const d = Math.abs(t - tSec);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return bestD <= 5400 ? best : -1;
+}
+
+function indiaFieldUsable(field) {
+  return !!field && Array.isArray(field.times) && indiaHourIndex(field, Date.now() / 1000) !== -1;
+}
+
+// NaN-aware 1-2-1 × 1-2-1 smoothing (NaN cells stay NaN).
+function smoothField(v, nr, nc) {
+  const out = new Array(nr * nc);
+  const w = d => (d === 0 ? 2 : 1);
+  for (let r = 0; r < nr; r++) {
+    for (let c = 0; c < nc; c++) {
+      if (!Number.isFinite(v[r * nc + c])) { out[r * nc + c] = NaN; continue; }
+      let s = 0, ws = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if (rr < 0 || cc < 0 || rr >= nr || cc >= nc) continue;
+          const x = v[rr * nc + cc];
+          if (!Number.isFinite(x)) continue;
+          const k = w(dr) * w(dc);
+          s += k * x; ws += k;
+        }
+      }
+      out[r * nc + c] = s / ws;
+    }
+  }
+  return out;
+}
+
+// Bilinear upsample by an integer factor f → { v, nr: (nr−1)f+1, nc: (nc−1)f+1 }.
+// A sample touching a NaN node is NaN.
+function upsampleBilinear(v, nr, nc, f) {
+  const NR = (nr - 1) * f + 1, NC = (nc - 1) * f + 1;
+  const out = new Array(NR * NC);
+  for (let R = 0; R < NR; R++) {
+    const r0 = Math.min(nr - 2, Math.floor(R / f)), fr = R / f - r0;
+    for (let C = 0; C < NC; C++) {
+      const c0 = Math.min(nc - 2, Math.floor(C / f)), fc = C / f - c0;
+      const a = v[r0 * nc + c0], b = v[r0 * nc + c0 + 1], c = v[(r0 + 1) * nc + c0], d = v[(r0 + 1) * nc + c0 + 1];
+      out[R * NC + C] = a * (1 - fr) * (1 - fc) + b * (1 - fr) * fc + c * fr * (1 - fc) + d * fr * fc;
+    }
+  }
+  return { v: out, nr: NR, nc: NC };
+}
+
+// Contour segments of `level` over a row-major grid, in [row, col] float coordinates.
+// Corners strictly above the level count as "in". Edge crossings are interpolated in a
+// fixed node order so neighbouring cells produce bit-identical shared points. Saddles are
+// resolved by the cell-centre mean; cells touching a NaN are skipped.
+function marchingSquares(v, nr, nc, level) {
+  const segs = [];
+  const cross = (r1, c1, r2, c2) => {
+    const a = v[r1 * nc + c1], b = v[r2 * nc + c2];
+    const t = b === a ? 0.5 : Math.max(0, Math.min(1, (level - a) / (b - a)));
+    return [r1 + (r2 - r1) * t, c1 + (c2 - c1) * t];
+  };
+  for (let r = 0; r < nr - 1; r++) {
+    for (let c = 0; c < nc - 1; c++) {
+      const tl = v[r * nc + c], tr = v[r * nc + c + 1], br = v[(r + 1) * nc + c + 1], bl = v[(r + 1) * nc + c];
+      if (!Number.isFinite(tl) || !Number.isFinite(tr) || !Number.isFinite(br) || !Number.isFinite(bl)) continue;
+      const idx = (tl > level ? 8 : 0) | (tr > level ? 4 : 0) | (br > level ? 2 : 0) | (bl > level ? 1 : 0);
+      if (idx === 0 || idx === 15) continue;
+      const T = () => cross(r, c, r, c + 1);         // top edge
+      const Rt = () => cross(r, c + 1, r + 1, c + 1); // right edge
+      const B = () => cross(r + 1, c, r + 1, c + 1); // bottom edge
+      const Lf = () => cross(r, c, r + 1, c);         // left edge
+      const centreIn = (tl + tr + br + bl) / 4 > level;
+      switch (idx) {
+        case 1: case 14: segs.push([Lf(), B()]); break;
+        case 2: case 13: segs.push([B(), Rt()]); break;
+        case 3: case 12: segs.push([Lf(), Rt()]); break;
+        case 4: case 11: segs.push([T(), Rt()]); break;
+        case 6: case 9: segs.push([T(), B()]); break;
+        case 7: case 8: segs.push([Lf(), T()]); break;
+        case 5: // tr + bl in
+          if (centreIn) { segs.push([Lf(), T()]); segs.push([B(), Rt()]); }
+          else { segs.push([T(), Rt()]); segs.push([Lf(), B()]); }
+          break;
+        case 10: // tl + br in
+          if (centreIn) { segs.push([T(), Rt()]); segs.push([Lf(), B()]); }
+          else { segs.push([Lf(), T()]); segs.push([B(), Rt()]); }
+          break;
+        default: break;
+      }
+    }
+  }
+  return segs;
+}
+
+// Chain segments into polylines by shared endpoints → [{ pts, closed }].
+function joinSegments(segs) {
+  const key = p => `${Math.round(p[0] * 1e6)},${Math.round(p[1] * 1e6)}`;
+  const list = (segs || []).filter(s => key(s[0]) !== key(s[1])); // drop zero-length pieces
+  const byKey = new Map();
+  list.forEach((s, i) => {
+    [0, 1].forEach(end => {
+      const k = key(s[end]);
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(i);
+    });
+  });
+  const used = new Array(list.length).fill(false);
+  const takeNext = (k) => {
+    const cands = byKey.get(k) || [];
+    for (const i of cands) {
+      if (used[i]) continue;
+      used[i] = true;
+      const s = list[i];
+      return key(s[0]) === k ? s[1] : s[0];
+    }
+    return null;
+  };
+  const chains = [];
+  for (let i = 0; i < list.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const pts = [list[i][0], list[i][1]];
+    let nxt;
+    while ((nxt = takeNext(key(pts[pts.length - 1]))) !== null) pts.push(nxt);
+    while ((nxt = takeNext(key(pts[0]))) !== null) pts.unshift(nxt);
+    const closed = pts.length > 3 && key(pts[0]) === key(pts[pts.length - 1]);
+    chains.push({ pts, closed });
+  }
+  return chains;
+}
+
+// Grid coordinate (row, col) of a field upsampled by f → [lat, lon].
+function gridToLatLon(r, c, spec, f = 1) {
+  return [+(spec.latN - (r / f) * spec.step).toFixed(4), +(spec.lonW + (c / f) * spec.step).toFixed(4)];
+}
+
+// Isobars every 2 hPa (major every 4) on the smoothed field upsampled ×4.
+// → [{ level, major, lines: [[[lat, lon], …]], labelAt: [lat, lon] | null }]
+function buildIsobars(pRow, spec) {
+  if (!Array.isArray(pRow) || pRow.length !== spec.nr * spec.nc) return [];
+  const f = 4;
+  const up = upsampleBilinear(smoothField(pRow, spec.nr, spec.nc), spec.nr, spec.nc, f);
+  const finite = up.v.filter(Number.isFinite);
+  if (!finite.length) return [];
+  const lo = Math.ceil(Math.min(...finite) / 2) * 2;
+  const hi = Math.floor(Math.max(...finite) / 2) * 2;
+  const out = [];
+  let labels = 0;
+  for (let level = lo; level <= hi; level += 2) {
+    const chains = joinSegments(marchingSquares(up.v, up.nr, up.nc, level));
+    if (!chains.length) continue;
+    const lines = chains.map(ch => ch.pts.map(p => gridToLatLon(p[0], p[1], spec, f)));
+    let labelAt = null;
+    const longest = chains.reduce((a, b) => (b.pts.length > a.pts.length ? b : a), chains[0]);
+    if (longest.pts.length >= 8 && labels < 16) {
+      const mid = longest.pts[Math.floor(longest.pts.length / 2)];
+      labelAt = gridToLatLon(mid[0], mid[1], spec, f);
+      labels++;
+    }
+    out.push({ level, major: level % 4 === 0, lines, labelAt });
+  }
+  return out;
+}
+
+// Model pressure minima (L) / maxima (H) on the smoothed field upsampled ×2: strict
+// 8-neighbour extreme, ≥ 2 cells from the edge, ≥ 1 hPa deeper than the ring 2 cells out,
+// not over high terrain (MSL pressure is extrapolated there), merged within 3°, ≤ 4 each.
+function findPressureCentres(pRow, spec, elev) {
+  if (!Array.isArray(pRow) || pRow.length !== spec.nr * spec.nc) return [];
+  const f = 2;
+  const up = upsampleBilinear(smoothField(pRow, spec.nr, spec.nc), spec.nr, spec.nc, f);
+  const { v, nr, nc } = up;
+  const at = (r, c) => v[r * nc + c];
+  const cands = [];
+  for (let r = 2; r <= nr - 3; r++) {
+    for (let c = 2; c <= nc - 3; c++) {
+      const x = at(r, c);
+      if (!Number.isFinite(x)) continue;
+      let isMin = true, isMax = true, ok = true;
+      for (let dr = -1; dr <= 1 && ok; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (!dr && !dc) continue;
+          const y = at(r + dr, c + dc);
+          if (!Number.isFinite(y)) { ok = false; break; }
+          if (!(x < y)) isMin = false;
+          if (!(x > y)) isMax = false;
+        }
+      }
+      if (!ok || (!isMin && !isMax)) continue;
+      let ringMin = Infinity, ringMax = -Infinity;
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          if (Math.max(Math.abs(dr), Math.abs(dc)) !== 2) continue;
+          const y = at(r + dr, c + dc);
+          if (!Number.isFinite(y)) continue;
+          ringMin = Math.min(ringMin, y);
+          ringMax = Math.max(ringMax, y);
+        }
+      }
+      const depth = isMin ? ringMin - x : x - ringMax;
+      if (!(depth >= 0.75)) continue; // closed by ≥0.75 hPa within ~2°: catches typical monsoon lows
+      const rawR = Math.round(r / f), rawC = Math.round(c / f);
+      const e = Array.isArray(elev) ? elev[rawR * spec.nc + rawC] : NaN;
+      if (Number.isFinite(e) && e > 1000) continue;
+      const [lat, lon] = gridToLatLon(r, c, spec, f);
+      cands.push({ kind: isMin ? 'L' : 'H', lat, lon, hPa: +x.toFixed(1), depth: +depth.toFixed(2) });
+    }
+  }
+  cands.sort((a, b) => b.depth - a.depth);
+  const kept = [];
+  cands.forEach(cand => {
+    const same = kept.filter(k => k.kind === cand.kind);
+    if (same.length >= 4) return;
+    if (same.some(k => Math.hypot(k.lat - cand.lat, k.lon - cand.lon) < 3)) return;
+    kept.push(cand);
+  });
+  return kept;
+}
+
+// Strongest model wind (km/h) within `km` of a point for hour h, or null.
+function maxWindNear(field, h, lat, lon, km = 300) {
+  if (!field || !Array.isArray(field.ws) || !Array.isArray(field.ws[h])) return null;
+  const pts = indiaSpec().points;
+  let best = null;
+  field.ws[h].forEach((w, i) => {
+    if (!Number.isFinite(w) || !pts[i]) return;
+    if (haversineDistance(lat, lon, pts[i].lat, pts[i].lon) > km) return;
+    if (best === null || w > best) best = w;
+  });
+  return best;
+}
+
+// Wind strength around a model low, in IMD-threshold words. Never claims a cyclone:
+// stops at "cyclonic-storm-strength winds" and always says it is a model estimate.
+function classifyLow(maxKmh) {
+  const tail = ' · model est., not IMD';
+  const v = Number(maxKmh);
+  if (Number.isFinite(v) && v >= 62) return { cls: 'cs', label: `Cyclonic-storm-strength winds${tail}` };
+  if (Number.isFinite(v) && v >= 50) return { cls: 'deep', label: `Deep-depression-strength winds${tail}` };
+  if (Number.isFinite(v) && v >= 31) return { cls: 'depression', label: `Depression-strength winds${tail}` };
+  return { cls: 'low', label: `Low${tail}` };
+}
+
+// Degree offsets for an arrow of lenPx screen pixels pointing DOWNWIND (wind blows FROM
+// fromDeg) at web-Mercator zoom z and latitude lat: equal pixel length at any latitude.
+function windArrowVector(fromDeg, lenPx, zoom, lat) {
+  const b = (((Number(fromDeg) + 180) % 360) + 360) % 360 * Math.PI / 180;
+  const k = 256 * Math.pow(2, zoom) / 360; // px per degree of longitude
+  return { dLat: Math.cos(b) * lenPx * Math.cos(lat * Math.PI / 180) / k, dLon: Math.sin(b) * lenPx / k };
+}
+
+function windBin(kmh) {
+  const v = Number(kmh);
+  if (!Number.isFinite(v)) return -1;
+  let i = 0;
+  while (i + 1 < WIND_BINS.length && v >= WIND_BINS[i + 1].min) i++;
+  return i;
+}
+
+// Arrow polylines grouped by speed bin → [{ bin, color, lines }] (one Leaflet path per bin).
+// Fixed screen length (recomputed on zoom), shaft centred on the grid point, two head barbs.
+function windArrowSegments(field, h, zoom, spec) {
+  if (!field || !Array.isArray(field.ws) || !Array.isArray(field.ws[h]) || !Number.isFinite(zoom)) return [];
+  const k = 256 * Math.pow(2, zoom) / 360;
+  const L = Math.max(10, Math.min(26, 0.55 * spec.step * k));
+  const stride = zoom <= 3 ? 2 : 1;
+  const bins = WIND_BINS.map((b, i) => ({ bin: i, color: b.color, lines: [] }));
+  spec.points.forEach((pt, i) => {
+    if (pt.row % stride || pt.col % stride) return;
+    const ws = field.ws[h][i], wd = field.wd[h][i];
+    if (!Number.isFinite(ws) || !Number.isFinite(wd) || ws < 3) return;
+    const v = windArrowVector(wd, L, zoom, pt.lat);
+    const tail = [pt.lat - v.dLat / 2, pt.lon - v.dLon / 2];
+    const tip = [pt.lat + v.dLat / 2, pt.lon + v.dLon / 2];
+    const down = (wd + 180) % 360;
+    // windArrowVector takes a FROM direction: +180 turns a pointing bearing into one.
+    const barb = side => {
+      const bv = windArrowVector(down + side + 180, 0.35 * L, zoom, tip[0]);
+      return [tip[0] + bv.dLat, tip[1] + bv.dLon];
+    };
+    const bin = bins[windBin(ws)];
+    bin.lines.push([tail, tip]);
+    bin.lines.push([barb(150), tip, barb(-150)]);
+  });
+  return bins.filter(b => b.lines.length);
+}
+
+function mapZoom() {
+  if (!mapInstance || typeof mapInstance.getZoom !== 'function') return null;
+  const z = Number(mapInstance.getZoom());
+  return Number.isFinite(z) ? z : null;
+}
+
+function isIndiaZoom() {
+  const z = mapZoom();
+  return z !== null && z <= INDIA_MAX_ZOOM;
+}
+
+function indiaLayersOn() {
+  return !!(appState.layers.wind || appState.layers.pressure);
+}
+
+function saveIndiaCache(field) {
+  try {
+    const r1 = v => (Number.isFinite(v) ? Math.round(v) : null);
+    const p1 = v => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
+    localStorage.setItem(INDIA_CACHE_KEY, JSON.stringify({
+      fetchedAt: field.fetchedAt,
+      times: field.times,
+      ws: field.ws.map(row => row.map(r1)),
+      wd: field.wd.map(row => row.map(r1)),
+      p: field.p.map(row => row.map(p1)),
+      elev: field.elev.map(r1)
+    }));
+  } catch (e) { /* quota / private mode: cache is optional */ }
+}
+
+function loadIndiaCache(now = Date.now()) {
+  try {
+    const c = JSON.parse(localStorage.getItem(INDIA_CACHE_KEY) || 'null');
+    const n = indiaSpec().points.length;
+    if (!c || !Number.isFinite(c.fetchedAt) || now - c.fetchedAt >= INDIA_CACHE_MAX_MS || !Array.isArray(c.times)) return null;
+    const okRows = a => Array.isArray(a) && a.length === c.times.length && a.every(row => Array.isArray(row) && row.length === n);
+    if (!okRows(c.ws) || !okRows(c.wd) || !okRows(c.p) || !Array.isArray(c.elev) || c.elev.length !== n) return null;
+    const nan = v => (v === null || !Number.isFinite(Number(v)) ? NaN : Number(v));
+    return {
+      times: c.times.map(Number),
+      ws: c.ws.map(row => row.map(nan)),
+      wd: c.wd.map(row => row.map(nan)),
+      p: c.p.map(row => row.map(nan)),
+      elev: c.elev.map(nan),
+      fetchedAt: c.fetchedAt
+    };
+  } catch (e) {
+    return null; // corrupt cache: refetch
+  }
+}
+
+// Live only, map present, wind or pressure on, India zoom. 60-min TTL, one request in
+// flight, back-off after a failure (60 min when rate-limited, else 15 min).
+async function refreshIndiaField() {
+  const st = appState.india;
+  if (appState.activeScenario !== 'live' || !mapInstance || !indiaLayersOn() || !isIndiaZoom()) return;
+  const now = Date.now();
+  if (st.field && now - st.field.fetchedAt < INDIA_TTL_MS) return;
+  if (indiaFetching) return;
+  const fail = st.failure;
+  if (fail && now - fail.at < (fail.rateLimited ? 60 : 15) * 60000) return;
+  if (!st.field) {
+    const cached = loadIndiaCache(now);
+    if (cached) {
+      st.field = cached;
+      st.failed = false;
+      rebuildTimeline();
+      updateLayerStatus();
+      if (now - cached.fetchedAt < INDIA_TTL_MS) return;
+    }
+  }
+  indiaFetching = true;
+  try {
+    const spec = indiaSpec();
+    const res = await fetchWithTimeout(indiaGridUrl(spec), {}, 25000); // 289-point request: first call can take ~15 s
+    if (!res.ok) throw new Error('India grid API ' + res.status);
+    const field = parseIndiaField(await readJsonWithTimeout(res, 20000), spec); // ~170–330 KB body
+    st.field = field;
+    st.failure = null;
+    st.failed = false;
+    saveIndiaCache(field);
+    rebuildTimeline();
+  } catch (e) {
+    console.warn('India model fetch failed:', e);
+    st.failure = { at: Date.now(), rateLimited: /\b429\b/.test(String(e && e.message)) };
+    if (!st.field) st.failed = true;
+  } finally {
+    indiaFetching = false;
+    updateLayerStatus();
+  }
+}
+
+// Label / centre markers: Leaflet divIcon with a DOM element (no HTML strings). The
+// zero-size icon box + CSS translate(-50%, -50%) on the child centres it on the point.
+function mapLabelMarker(latlng, element) {
+  return L.marker(latlng, {
+    pane: 'rsMapLabel',
+    interactive: false,
+    keyboard: false,
+    icon: L.divIcon({ className: 'rs-divicon', html: element, iconSize: [0, 0], iconAnchor: [0, 0] })
+  });
+}
+
+function isobarLabelEl(level) {
+  const el = document.createElement('span');
+  el.className = 'rs-isobar-label';
+  el.textContent = String(level);
+  return el;
+}
+
+function pressureCentreEl(ctr, tagText) {
+  const el = document.createElement('div');
+  el.className = `rs-pcentre rs-pcentre-${ctr.kind}`;
+  const letter = document.createElement('span');
+  letter.className = 'rs-pcentre-letter';
+  letter.textContent = ctr.kind;
+  const hpa = document.createElement('span');
+  hpa.className = 'rs-pcentre-hpa';
+  hpa.textContent = String(Math.round(ctr.hPa));
+  el.appendChild(letter);
+  el.appendChild(hpa);
+  if (tagText) {
+    const tag = document.createElement('span');
+    tag.className = 'rs-pcentre-tag';
+    tag.textContent = tagText;
+    el.appendChild(tag);
+  }
+  return el;
+}
+
+// Draw (or clear) wind arrows, isobars and L/H centres for a timeline frame. Model frames
+// use their own hour; radar frames / no timeline use "now". Memoised on hour + zoom.
+function renderIndiaLayers(frame) {
+  if (!mapInstance || typeof L === 'undefined' || typeof L.layerGroup !== 'function') return;
+  const field = appState.india && appState.india.field;
+  const z = mapZoom();
+  const tSec = frame && frame.kind === 'model' ? frame.t : Date.now() / 1000;
+  const h = field ? indiaHourIndex(field, tSec) : -1;
+  const visible = h !== -1 && z !== null && z <= INDIA_MAX_ZOOM && indiaLayersOn();
+  const key = visible ? `${h}|${z}|${isMobileMap()}|${appState.layers.wind}|${appState.layers.pressure}|${field.fetchedAt}` : 'off'; // arrow weight differs on phones
+  if (key === indiaRenderKey) return;
+  indiaRenderKey = key;
+  if (!indiaWindGroup) {
+    indiaWindGroup = L.layerGroup();
+    indiaIsoGroup = L.layerGroup();
+    indiaLabelGroup = L.layerGroup();
+  }
+  [indiaWindGroup, indiaIsoGroup, indiaLabelGroup].forEach(g => { if (typeof g.clearLayers === 'function') g.clearLayers(); });
+  if (!visible) {
+    [indiaWindGroup, indiaIsoGroup, indiaLabelGroup].forEach(removeMapLayer);
+    updateIndiaLegend();
+    return;
+  }
+  const spec = indiaSpec();
+  const add = (layer, group) => { if (layer && typeof layer.addTo === 'function') layer.addTo(group); };
+  if (appState.layers.wind && typeof L.polyline === 'function') {
+    const weight = isMobileMap() ? 1.6 : 2;
+    windArrowSegments(field, h, z, spec).forEach(bin => {
+      add(L.polyline(bin.lines, { pane: 'rsWind', color: bin.color, weight, opacity: 0.9, lineCap: 'round', lineJoin: 'round', interactive: false }), indiaWindGroup);
+    });
+  }
+  if (appState.layers.pressure && typeof L.polyline === 'function') {
+    field._iso = field._iso || {};
+    field._ctr = field._ctr || {};
+    if (!field._iso[h]) field._iso[h] = buildIsobars(field.p[h], spec);
+    if (!field._ctr[h]) field._ctr[h] = findPressureCentres(field.p[h], spec, field.elev);
+    field._iso[h].forEach(iso => {
+      add(L.polyline(iso.lines, { pane: 'rsIsobar', color: '#ffffff', opacity: 0.5, weight: iso.major ? 1.6 : 1, interactive: false }), indiaIsoGroup);
+      if (iso.labelAt && typeof L.marker === 'function' && typeof L.divIcon === 'function') {
+        add(mapLabelMarker(iso.labelAt, isobarLabelEl(iso.level)), indiaLabelGroup);
+      }
+    });
+    if (typeof L.marker === 'function' && typeof L.divIcon === 'function') {
+      field._ctr[h].forEach(ctr => {
+        const tag = ctr.kind === 'L' ? classifyLow(maxWindNear(field, h, ctr.lat, ctr.lon, 300)).label : '';
+        add(mapLabelMarker([ctr.lat, ctr.lon], pressureCentreEl(ctr, tag)), indiaLabelGroup);
+      });
+    }
+  }
+  [indiaWindGroup, indiaIsoGroup, indiaLabelGroup].forEach(addMapLayer);
+  updateIndiaLegend();
+}
+
+// All-India view (phone: clear of the top bar, right-hand buttons and the sheet).
+function showIndiaView() {
+  if (!mapInstance || typeof mapInstance.fitBounds !== 'function') return;
+  appState.mapFocus = 'india';
+  let opts = { padding: [10, 10], maxZoom: 5 };
+  if (isMobileMap()) {
+    snapSheetTo('peek'); // a half / full sheet would leave no room for India
+    let bottom = (sheetState.visible || 0) + 12;
+    const size = typeof mapInstance.getSize === 'function' ? mapInstance.getSize() : null;
+    const mapH = size && Number(size.y);
+    if (Number.isFinite(mapH) && mapH > 0) bottom = Math.min(bottom, Math.round(mapH * 0.5));
+    opts = { paddingTopLeft: [12, 72], paddingBottomRight: [60, bottom], maxZoom: 5 };
+  }
+  mapInstance.fitBounds(INDIA_BOUNDS, opts);
+}
+
+// Zoom end: switch between local (rain grid) and India (wind/pressure) views, redraw the
+// fixed-pixel arrows, and fetch the India field once it is actually on screen.
+function onMapZoomEnd() {
+  const bucket = isIndiaZoom() ? 'india' : 'local';
+  if (bucket === 'local' && appState.mapFocus === 'india') appState.mapFocus = isMobileMap() ? 'radar' : 'route';
+  const z = mapZoom();
+  const gridZoom = z === null || z >= LOCAL_GRID_MIN_ZOOM; // local rain grid drawn (see showFrame)
+  if (bucket !== indiaZoomBucket) {
+    indiaZoomBucket = bucket;
+    localGridZoomOn = gridZoom;
+    rebuildTimeline(); // model source (local grid vs India field) depends on the zoom
+  } else if (gridZoom !== localGridZoomOn) {
+    localGridZoomOn = gridZoom; // zoom 7 is in the India bucket but also draws the local grid
+    if (timelineState.frames.length) showFrame(timelineState.index);
+  }
+  renderIndiaLayers(timelineState.frames[timelineState.index] || null);
+  updateLayerStatus();
+  refreshIndiaField().catch(err => console.warn('India model refresh failed:', err));
+}
+
+// Sub-line of each layer toggle (both panels) reflects failures / zoom / cyclone count.
+function layerStatusText(key, fallback) {
+  if (key === 'wind' || key === 'pressure') {
+    if (!appState.layers[key]) return fallback;
+    if (appState.india.failed) return 'India model map unavailable';
+    if (mapZoom() !== null && !isIndiaZoom()) return 'Zoom out or tap India to view';
+    return fallback;
+  }
+  if (key === 'cyclones') {
+    const st = appState.cyclones;
+    if (st.failed && !st.events.length) return 'Cyclone feed unavailable';
+    if (!st.fetchedAt) return fallback;
+    if (!st.events.length) return 'No active cyclones in region';
+    const asOf = st.asOf ? ` · as of ${fmtClock(new Date(st.asOf))}` : '';
+    return `${st.events.length} active · GDACS${asOf}`;
+  }
+  return fallback;
+}
+
+function updateLayerStatus() {
+  layerToggleInputs.forEach(t => {
+    if (!t.sub || !t.def) return;
+    const text = layerStatusText(t.key, t.def.sub);
+    if (t.sub.textContent !== text) t.sub.textContent = text;
+  });
+  updateIndiaLegend();
+}
+
+function addIndiaLegendControl() {
+  if (indiaLegendEl || !mapInstance || typeof L === 'undefined' || typeof L.control !== 'function') return;
+  const ctl = L.control({ position: 'bottomleft' });
+  ctl.onAdd = () => {
+    const div = document.createElement('div');
+    div.className = 'rs-india-legend';
+    div.hidden = true;
+    const row = (cls) => { const r = document.createElement('div'); r.className = `rs-il-row ${cls}`; div.appendChild(r); return r; };
+    const text = (parent, cls, t) => { const s = document.createElement('span'); s.className = cls; s.textContent = t; parent.appendChild(s); return s; };
+
+    const windRow = row('rs-il-wind');
+    text(windRow, 'rs-il-title', 'Wind');
+    WIND_BINS.forEach((b, i) => {
+      const item = document.createElement('span');
+      item.className = 'rs-wl-item';
+      const sw = document.createElement('span');
+      sw.className = 'rs-wl-sw';
+      sw.style.background = b.color;
+      item.appendChild(sw);
+      text(item, 'rs-wl-label', i === WIND_BINS.length - 1 ? `${b.min}+` : String(b.min));
+      windRow.appendChild(item);
+    });
+    text(windRow, 'rs-wl-unit', 'km/h');
+
+    const isoRow = row('rs-il-pressure');
+    text(isoRow, 'rs-il-text', '— isobars 2 hPa · L/H = model lows/highs (not IMD)');
+
+    const tcRow = row('rs-il-tc');
+    text(tcRow, 'rs-il-title', 'Cyclone alert');
+    Object.keys(TC_ALERT_COLORS).forEach(level => {
+      const item = document.createElement('span');
+      item.className = 'rs-wl-item';
+      const dot = document.createElement('span');
+      dot.className = 'rs-tc-dot';
+      dot.style.borderColor = TC_ALERT_COLORS[level];
+      item.appendChild(dot);
+      text(item, 'rs-wl-label', level);
+      tcRow.appendChild(item);
+    });
+    if (L.DomEvent && typeof L.DomEvent.disableClickPropagation === 'function') L.DomEvent.disableClickPropagation(div);
+    indiaLegendEl = div;
+    updateIndiaLegend();
+    return div;
+  };
+  ctl.addTo(mapInstance);
+}
+
+// Legend only while India layers are actually drawn; rows follow the layer toggles.
+function updateIndiaLegend() {
+  const div = indiaLegendEl;
+  if (!div) return;
+  const show = indiaLayersOn() && isIndiaZoom() && indiaFieldUsable(appState.india.field);
+  div.hidden = !show;
+  if (typeof div.querySelector !== 'function') return;
+  const windRow = div.querySelector('.rs-il-wind');
+  const isoRow = div.querySelector('.rs-il-pressure');
+  const tcRow = div.querySelector('.rs-il-tc');
+  if (windRow) windRow.hidden = !appState.layers.wind;
+  if (isoRow) isoRow.hidden = !appState.layers.pressure;
+  if (tcRow) tcRow.hidden = !appState.layers.cyclones;
+}
+
+// ============================================================================
+// 8.66 CYCLONES (GDACS): ACTIVE STORMS, TRACK, WIND ZONES + "NEAR YOU" BANNER
+// ============================================================================
+// GDACS (EC JRC / UN) is a global disaster alert service, NOT the official RSMC New Delhi
+// (IMD) warning: every surface says so and links to IMD. Failures never throw.
+
+const TC_TTL_MS = 30 * 60000;
+const TC_CACHE_KEY = 'rainstop_cyclones_v2'; // v2: track segments carry `forecast`
+const TC_CACHE_OFFLINE_MS = 6 * 3600000;
+const TC_BACKOFF_MS = 10 * 60000;
+const TC_BBOX = { latS: -5, latN: 40, lonW: 40, lonE: 110 };
+const TC_NEAR_KM = 800;
+const TC_STALE_H = 48;
+const TC_MAX_GEOM = 3;
+const TC_ALERT_COLORS = { Green: '#22c55e', Orange: '#f59e0b', Red: '#ef4444' };
+const IMD_URL = 'https://mausam.imd.gov.in/';
+
+let cycloneFetching = false;
+let tcGroup = null;
+let tcRenderKey = '';
+let cycloneAlertKey = '';
+
+function gdacsListUrl(now = Date.now()) {
+  const day = ms => new Date(ms).toISOString().slice(0, 10); // UTC dates
+  return `https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=TC&fromdate=${day(now - 7 * 86400000)}&todate=${day(now)}`;
+}
+
+function gdacsGeometryUrl(id, episode) {
+  return `https://www.gdacs.org/gdacsapi/api/polygons/getgeometry?eventtype=TC&eventid=${encodeURIComponent(id)}&episodeid=${encodeURIComponent(episode)}`;
+}
+
+// Only https gdacs.org links are used as hrefs / fetch targets (feed content is untrusted).
+function safeGdacsUrl(u) {
+  return typeof u === 'string' && /^https:\/\/(www\.)?gdacs\.org\//.test(u) ? u : null;
+}
+
+// GDACS timestamps carry no zone: they are UTC.
+function parseGdacsTime(s) {
+  if (typeof s !== 'string' || !s) return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`);
+}
+
+// Event list → current storms inside the North Indian Ocean box. Throws unless GeoJSON.
+function parseGdacsEvents(json, nowMs = Date.now()) {
+  if (!json || typeof json !== 'object' || json.type !== 'FeatureCollection' || !Array.isArray(json.features)) {
+    throw new Error('GDACS: not a GeoJSON FeatureCollection');
+  }
+  const events = [];
+  json.features.forEach(f => {
+    try {
+      const p = f && f.properties;
+      const g = f && f.geometry;
+      if (!p || !g || g.type !== 'Point' || !Array.isArray(g.coordinates)) return;
+      if (!(p.iscurrent === true || p.iscurrent === 'true')) return;
+      const lon = Number(g.coordinates[0]), lat = Number(g.coordinates[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      if (lat < TC_BBOX.latS || lat > TC_BBOX.latN || lon < TC_BBOX.lonW || lon > TC_BBOX.lonE) return;
+      if (p.eventid === undefined || p.eventid === null) return;
+      const toMs = parseGdacsTime(p.todate);
+      const ageH = Number.isFinite(toMs) ? (nowMs - toMs) / 3600000 : null;
+      const sev = p.severitydata && typeof p.severitydata === 'object' ? p.severitydata : {};
+      const sevVal = Number(sev.severity);
+      const maxKmh = Number.isFinite(sevVal) && (!sev.severityunit || /km\/h/i.test(sev.severityunit)) ? Math.round(sevVal) : null;
+      const alert = ['Green', 'Orange', 'Red'].includes(p.alertlevel) ? p.alertlevel : 'Green';
+      const url = p.url && typeof p.url === 'object' ? p.url : {};
+      const name = String(p.eventname || p.name || 'Unnamed').replace(/^Tropical Cyclone\s+/i, '').slice(0, 60);
+      const episode = p.episodeid === undefined || p.episodeid === null ? '' : String(p.episodeid);
+      events.push({
+        id: String(p.eventid), episode, name, alert, lat, lon, maxKmh,
+        severityText: typeof sev.severitytext === 'string' ? sev.severitytext.slice(0, 160) : '',
+        toMs: Number.isFinite(toMs) ? toMs : null,
+        ageH: ageH === null ? null : +ageH.toFixed(1),
+        stale: ageH !== null && ageH > TC_STALE_H,
+        country: typeof p.country === 'string' ? p.country.slice(0, 120) : '',
+        reportUrl: safeGdacsUrl(url.report),
+        geomUrl: safeGdacsUrl(url.geometry) || gdacsGeometryUrl(p.eventid, episode)
+      });
+    } catch (e) { /* malformed feature: skip */ }
+  });
+  return events;
+}
+
+// GDACS answers HTTP 204 with an empty body when no storm matches the dates: that is an
+// empty list (success). Any other body must still be GeoJSON (parseGdacsEvents throws).
+const GDACS_EMPTY_LIST = () => ({ type: 'FeatureCollection', features: [] });
+async function readGdacsList(res) {
+  if (res.status === 204) return GDACS_EMPTY_LIST();
+  if (typeof res.text !== 'function') return res.json();
+  const text = await res.text();
+  if (typeof text !== 'string' || !text.trim()) return GDACS_EMPTY_LIST();
+  return JSON.parse(text);
+}
+
+// Keep a ring to at most `max` points (always keeps the last point so rings stay closed).
+function decimateRing(ring, max = 300) {
+  if (!Array.isArray(ring) || ring.length <= max) return ring;
+  const step = Math.ceil(ring.length / (max - 1));
+  const out = [];
+  for (let i = 0; i < ring.length; i += step) out.push(ring[i]);
+  if (out[out.length - 1] !== ring[ring.length - 1]) out.push(ring[ring.length - 1]);
+  return out;
+}
+
+// Event geometry → { zones: [{ level, label, rings }], cone, track: [{ cat, forecast, pts }], centroid }.
+// forecast = GDACS `forecast: true` (future path); false segments are the past path.
+// rings / cone are Leaflet multi-polygon latlngs: [polygon][ring][[lat, lon]].
+// Only the overall wind zones (labels "60 km/h" / "90 km/h" / "120 km/h") are kept; the
+// per-time zones (date labels) and per-point circles are ignored.
+function parseGdacsGeometry(json) {
+  if (!json || typeof json !== 'object' || json.type !== 'FeatureCollection' || !Array.isArray(json.features)) {
+    throw new Error('GDACS geometry: not a GeoJSON FeatureCollection');
+  }
+  const swap = pt => (Array.isArray(pt) && Number.isFinite(Number(pt[0])) && Number.isFinite(Number(pt[1])) ? [Number(pt[1]), Number(pt[0])] : null);
+  const ringOf = r => decimateRing((Array.isArray(r) ? r : []).map(swap).filter(Boolean), 300);
+  const polygons = g => {
+    if (!g || !Array.isArray(g.coordinates)) return [];
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+    return polys.map(poly => (Array.isArray(poly) ? poly.map(ringOf).filter(r => r.length >= 3) : [])).filter(p => p.length);
+  };
+  const out = { zones: [], cone: null, track: [], centroid: null };
+  json.features.forEach(f => {
+    const p = (f && f.properties) || {};
+    const g = f && f.geometry;
+    const cls = typeof p.Class === 'string' ? p.Class : '';
+    const label = typeof p.polygonlabel === 'string' ? p.polygonlabel : '';
+    if (/^Poly_(Green|Orange|Red)$/.test(cls) && /km\/h/.test(label)) {
+      const rings = polygons(g);
+      if (rings.length) out.zones.push({ level: cls.slice(5), label, rings });
+    } else if (cls === 'Poly_Cones') {
+      const rings = polygons(g);
+      if (rings.length) out.cone = rings;
+    } else if (/^Line_Line/.test(cls) && g) {
+      const lines = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+      (Array.isArray(lines) ? lines : []).forEach(line => {
+        const pts = (Array.isArray(line) ? line : []).map(swap).filter(Boolean);
+        if (pts.length >= 2) out.track.push({ cat: label || '', forecast: p.forecast === true, pts });
+      });
+    } else if (cls === 'Point_Centroid' && g && g.type === 'Point') {
+      out.centroid = swap(g.coordinates);
+    }
+  });
+  const order = { Green: 0, Orange: 1, Red: 2 };
+  out.zones.sort((a, b) => order[a.level] - order[b.level]); // Red drawn last (on top)
+  return out;
+}
+
+// Initial bearing (degrees from north) from point 1 to point 2.
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const y = Math.sin((lon2 - lon1) * rad) * Math.cos(lat2 * rad);
+  const x = Math.cos(lat1 * rad) * Math.sin(lat2 * rad) - Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos((lon2 - lon1) * rad);
+  return ((Math.atan2(y, x) / rad) + 360) % 360;
+}
+
+// Nearest non-stale storm within maxKm of origin — current position or a FORECAST track
+// vertex (the past path is ignored) → { ev, km, dir, forecast } (dir = compass direction
+// of that point from you; forecast = the nearest point is on the forecast track), or null.
+function cycloneProximity(events, geom, origin, maxKm = TC_NEAR_KM) {
+  if (!Array.isArray(events) || !origin || !Number.isFinite(origin.lat) || !Number.isFinite(origin.lon)) return null;
+  let best = null;
+  events.forEach(ev => {
+    if (!ev || ev.stale) return;
+    const pts = [[ev.lat, ev.lon, false]];
+    const g = geom && geom[`${ev.id}:${ev.episode}`];
+    if (g && Array.isArray(g.track)) {
+      g.track.forEach(seg => {
+        if (seg && seg.forecast === true && Array.isArray(seg.pts)) seg.pts.forEach(pt => { if (Array.isArray(pt)) pts.push([pt[0], pt[1], true]); });
+      });
+    }
+    pts.forEach(([lat, lon, forecast]) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const km = haversineDistance(origin.lat, origin.lon, lat, lon);
+      if (km <= maxKm && (!best || km < best.km)) best = { ev, km, lat, lon, forecast };
+    });
+  });
+  if (!best) return null;
+  return { ev: best.ev, km: best.km, dir: fmtWindDir(bearingDeg(origin.lat, origin.lon, best.lat, best.lon)), forecast: best.forecast };
+}
+
+function refreshEventAges(events, nowMs = Date.now()) {
+  (events || []).forEach(ev => {
+    if (!Number.isFinite(ev.toMs)) return;
+    ev.ageH = +((nowMs - ev.toMs) / 3600000).toFixed(1);
+    ev.stale = ev.ageH > TC_STALE_H;
+  });
+  return events;
+}
+
+function loadCycloneCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(TC_CACHE_KEY) || 'null');
+    if (!c || !Number.isFinite(c.fetchedAt) || !Array.isArray(c.events)) return null;
+    return { fetchedAt: c.fetchedAt, events: c.events, geom: c.geom && typeof c.geom === 'object' ? c.geom : {} };
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveCycloneCache(st) {
+  try {
+    localStorage.setItem(TC_CACHE_KEY, JSON.stringify({ fetchedAt: st.fetchedAt, events: st.events, geom: st.geom }));
+  } catch (e) { /* quota / private mode: cache is optional */ }
+}
+
+// Live only. Event list every 30 min; geometry only for new storm episodes (≤ 3). Offline:
+// a cache ≤ 6 h old is shown "as of" its time. Never throws.
+async function refreshCyclones() {
+  try {
+    if (appState.activeScenario !== 'live' || typeof fetch !== 'function' || cycloneFetching) return;
+    const st = appState.cyclones;
+    const now = Date.now();
+    if (st.fetchedAt && now - st.fetchedAt < TC_TTL_MS) return;
+    if (st.failure && now - st.failure.at < TC_BACKOFF_MS) return;
+    const cached = loadCycloneCache();
+    if (!st.fetchedAt && cached && now - cached.fetchedAt < TC_TTL_MS) {
+      Object.assign(st, { events: refreshEventAges(cached.events, now), geom: cached.geom, fetchedAt: cached.fetchedAt, failed: false, asOf: 0 });
+      renderCycloneLayers();
+      updateLayerStatus();
+      updateUI();
+      return;
+    }
+    cycloneFetching = true;
+    try {
+      const res = await fetchWithTimeout(gdacsListUrl(now), {}, 12000);
+      if (!res.ok) throw new Error('GDACS ' + res.status);
+      const events = parseGdacsEvents(await readGdacsList(res), Date.now());
+      const geom = {};
+      for (const ev of events.slice(0, TC_MAX_GEOM)) {
+        const k = `${ev.id}:${ev.episode}`;
+        if (st.geom && st.geom[k]) { geom[k] = st.geom[k]; continue; }
+        try {
+          const gr = await fetchWithTimeout(ev.geomUrl, {}, 12000);
+          if (!gr.ok) throw new Error('GDACS geometry ' + gr.status);
+          geom[k] = parseGdacsGeometry(await gr.json());
+        } catch (e) {
+          console.warn('GDACS geometry failed:', e);
+        }
+      }
+      Object.assign(st, { events, geom, fetchedAt: Date.now(), failed: false, failure: null, asOf: 0 });
+      saveCycloneCache(st);
+    } catch (e) {
+      console.warn('GDACS cyclone feed failed:', e);
+      st.failure = { at: Date.now() };
+      if (!st.events.length && cached && Date.now() - cached.fetchedAt < TC_CACHE_OFFLINE_MS) {
+        Object.assign(st, { events: refreshEventAges(cached.events), geom: cached.geom, fetchedAt: cached.fetchedAt, failed: false, asOf: cached.fetchedAt });
+      } else if (!st.events.length) {
+        st.failed = true;
+      }
+    } finally {
+      cycloneFetching = false;
+    }
+    updateLayerStatus();
+    renderCycloneLayers();
+    updateUI();
+  } catch (e) {
+    console.warn('Cyclone refresh failed:', e);
+  }
+}
+
+function fmtAdvisoryTime(ms) {
+  if (!Number.isFinite(ms)) return '–';
+  return new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function externalLink(href, text) {
+  const a = document.createElement('a');
+  a.setAttribute('href', href);
+  a.setAttribute('target', '_blank');
+  a.setAttribute('rel', 'noopener');
+  a.textContent = text;
+  return a;
+}
+
+function cyclonePopupEl(ev) {
+  const box = document.createElement('div');
+  box.className = 'rs-tc-popup';
+  const line = (cls, text) => {
+    const d = document.createElement('div');
+    d.className = cls;
+    d.textContent = text;
+    box.appendChild(d);
+    return d;
+  };
+  line('rs-tc-popup-name', `🌀 ${ev.name}`);
+  line('rs-tc-popup-alert', `GDACS ${ev.alert} alert`);
+  line('rs-tc-popup-row', `Max wind ${isNum(ev.maxKmh) ? `~${ev.maxKmh} km/h` : '–'}`);
+  const age = isNum(ev.ageH) ? ` (${Math.max(0, Math.round(ev.ageH))} h ago)` : '';
+  line('rs-tc-popup-row', `Last advisory ${fmtAdvisoryTime(ev.toMs)}${age}${ev.stale ? ' — may have weakened' : ''}`);
+  line('rs-tc-popup-note', 'Not an official warning — RSMC New Delhi (IMD) issues those.');
+  const links = document.createElement('div');
+  links.className = 'rs-tc-popup-links';
+  if (ev.reportUrl) {
+    links.appendChild(externalLink(ev.reportUrl, 'GDACS report'));
+    links.appendChild(document.createTextNode(' · '));
+  }
+  links.appendChild(externalLink(IMD_URL, 'IMD (official)'));
+  box.appendChild(links);
+  return box;
+}
+
+function cycloneIconEl(ev) {
+  const wrap = document.createElement('div');
+  wrap.className = 'rs-tc-icon';
+  wrap.setAttribute('data-alert', ev.alert);
+  if (ev.stale) wrap.setAttribute('data-stale', '1');
+  const glyph = document.createElement('span');
+  glyph.className = 'rs-tc-glyph';
+  glyph.textContent = '🌀';
+  const name = document.createElement('span');
+  name.className = 'rs-tc-name';
+  name.textContent = ev.name;
+  wrap.appendChild(glyph);
+  wrap.appendChild(name);
+  return wrap;
+}
+
+const TC_TRACK_COLORS = { TD: '#7dd3fc', TS: '#facc15' };
+const TC_ZONE_FILL = { Green: 0.08, Orange: 0.12, Red: 0.16 };
+
+// Storm position (clickable), track, cone and wind zones. All zooms.
+function renderCycloneLayers() {
+  if (!mapInstance || typeof L === 'undefined' || typeof L.layerGroup !== 'function') return;
+  const st = appState.cyclones;
+  const on = !!appState.layers.cyclones && st.events.length > 0;
+  const key = on ? `${st.fetchedAt}|${st.events.map(e => `${e.id}:${e.episode}:${e.stale}`).join(',')}|${Object.keys(st.geom || {}).join(',')}` : 'off';
+  if (key === tcRenderKey) return;
+  tcRenderKey = key;
+  if (!tcGroup) tcGroup = L.layerGroup();
+  if (typeof tcGroup.clearLayers === 'function') tcGroup.clearLayers();
+  if (!on) { removeMapLayer(tcGroup); return; }
+  const add = layer => { if (layer && typeof layer.addTo === 'function') layer.addTo(tcGroup); };
+  st.events.forEach(ev => {
+    const g = st.geom && st.geom[`${ev.id}:${ev.episode}`];
+    if (g && typeof L.polygon === 'function') {
+      (g.zones || []).forEach(z => {
+        const color = TC_ALERT_COLORS[z.level] || TC_ALERT_COLORS.Green;
+        add(L.polygon(z.rings, { pane: 'rsCyclone', color, weight: 1, opacity: 0.7, fillColor: color, fillOpacity: TC_ZONE_FILL[z.level] || 0.08, interactive: false }));
+      });
+      if (g.cone) add(L.polygon(g.cone, { pane: 'rsCyclone', color: '#ffffff', weight: 1, opacity: 0.4, dashArray: '4 4', fill: false, interactive: false }));
+    }
+    if (g && typeof L.polyline === 'function') {
+      (g.track || []).forEach(seg => {
+        add(L.polyline(seg.pts, { pane: 'rsCyclone', color: TC_TRACK_COLORS[seg.cat] || '#ef4444', weight: 2, opacity: 0.9, interactive: false }));
+      });
+    }
+    if (typeof L.marker === 'function' && typeof L.divIcon === 'function') {
+      const marker = L.marker([ev.lat, ev.lon], {
+        title: `Cyclone ${ev.name} (GDACS ${ev.alert})`,
+        icon: L.divIcon({ className: 'rs-tc-marker', html: cycloneIconEl(ev), iconSize: [28, 28], iconAnchor: [14, 14] })
+      });
+      if (marker && typeof marker.bindPopup === 'function') marker.bindPopup(cyclonePopupEl(ev));
+      add(marker);
+    }
+  });
+  addMapLayer(tcGroup);
+}
+
+// "Near you" banner (status card + phone peek). GDACS storms only — never model lows.
+function renderCycloneAlert() {
+  const box = document.getElementById('cycloneAlert');
+  const peekAlert = document.getElementById('mPeekAlert');
+  const st = appState.cyclones;
+  const hit = appState.activeScenario === 'live' && st
+    ? cycloneProximity(st.events, st.geom, appState.originCoords || DEFAULT_COORDS, TC_NEAR_KM)
+    : null;
+  const km = hit ? Math.max(10, Math.round(hit.km / 10) * 10) : 0;
+  const ageH = hit && isNum(hit.ev.ageH) ? Math.round(hit.ev.ageH) : null;
+  const key = hit ? `${hit.ev.id}:${hit.ev.episode}|${km}|${hit.dir}|${hit.forecast}|${hit.ev.alert}|${hit.ev.maxKmh}|${hit.ev.name}|${ageH}` : 'none';
+  if (key === cycloneAlertKey) return;
+  cycloneAlertKey = key;
+  if (box) {
+    box.textContent = '';
+    if (hit) {
+      const ev = hit.ev;
+      box.setAttribute('data-alert', ev.alert);
+      const msg = document.createElement('span');
+      msg.className = 'rs-cyclone-alert-text';
+      const wind = isNum(ev.maxKmh) ? ` · max wind ${ev.maxKmh} km/h` : '';
+      // Old advisories: say so — the storm may have weakened since (GDACS keeps it "current").
+      const age = ageH !== null && ageH >= 12 ? ` (last advisory ${ageH} h ago — may have weakened)` : '';
+      const where = hit.forecast ? `forecast track passes ~${km} km ${hit.dir} of you` : `~${km} km ${hit.dir} of you`;
+      msg.textContent = `🌀 Cyclone ${ev.name} ${where} · GDACS ${ev.alert}${wind}${age}. Not an official warning — follow IMD. `;
+      box.appendChild(msg);
+      if (ev.reportUrl) {
+        box.appendChild(externalLink(ev.reportUrl, 'GDACS'));
+        box.appendChild(document.createTextNode(' · '));
+      }
+      box.appendChild(externalLink(IMD_URL, 'IMD'));
+    } else {
+      box.setAttribute('data-alert', '');
+    }
+    box.hidden = !hit;
+  }
+  if (peekAlert) {
+    const wasHidden = !!peekAlert.hidden;
+    peekAlert.textContent = hit ? `🌀 ${hit.ev.name} · ${hit.forecast ? 'track ' : ''}${km} km ${hit.dir} · ${hit.ev.alert}${ageH !== null && ageH >= 12 ? ` · ${ageH} h old` : ''}` : '';
+    if (hit) peekAlert.setAttribute('data-alert', hit.ev.alert);
+    peekAlert.hidden = !hit;
+    if (wasHidden !== !hit && isMobileMap()) layoutSheet();
+  }
 }
 
 // ============================================================================
@@ -3779,6 +4959,12 @@ function initMapFirstLayout() {
       fitRouteBounds();
     });
   }
+  const btnIndia = byId('mBtnIndia');
+  if (btnIndia) btnIndia.addEventListener('click', () => { setPanel(false); showIndiaView(); });
+
+  // India layers: legend + redraw / refetch when the zoom changes
+  addIndiaLegendControl();
+  if (typeof mapInstance.on === 'function') mapInstance.on('zoomend', onMapZoomEnd);
 
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopTimeline(); });
 
@@ -3913,7 +5099,9 @@ async function detectLocationWithFallback(isUserTriggered = false) {
     if (inputO) inputO.value = placeName;
     if (originMarker) originMarker.setLatLng([lat, lon]);
     // Phone radar view stays zoomed out (regional rain); desktop zooms to the street.
-    if (mapInstance) mapInstance.setView([lat, lon], appState.mapFocus === 'radar' ? 9 : 14);
+    // A background fix keeps the all-India view; a GPS tap leaves it (the user asked to locate).
+    if (isUserTriggered) appState.mapFocus = isMobileMap() ? 'radar' : 'route';
+    if (mapInstance && (isUserTriggered || appState.mapFocus !== 'india')) mapInstance.setView([lat, lon], appState.mapFocus === 'radar' ? 9 : 14);
 
     const shortPlace = placeName.split(',')[0].trim();
     if (engLabel) engLabel.textContent = `${shortPlace} Live`;
@@ -4229,6 +5417,7 @@ function setupEventListeners() {
       if (originMarker && appState.originCoords) originMarker.setLatLng([appState.originCoords.lat, appState.originCoords.lon]);
       if (destMarker && appState.destCoords) destMarker.setLatLng([appState.destCoords.lat, appState.destCoords.lon]);
 
+      focusNewTrip();
       fetchAndDrawRoute();
     });
   });
@@ -4346,6 +5535,7 @@ function setupEventListeners() {
     if (originMarker) originMarker.setLatLng([appState.originCoords.lat, appState.originCoords.lon]);
     if (destMarker) destMarker.setLatLng([appState.destCoords.lat, appState.destCoords.lon]);
 
+    focusNewTrip();
     fetchAndDrawRoute();
   });
 

@@ -2717,6 +2717,190 @@ body.rain-theme {
 }
 
 /* ==========================================================================
+   INDIA WEATHER LAYERS (model wind / isobars / L-H centres, GDACS cyclones)
+   Static vectors + labels only: no looping animation, no backdrop blur.
+   ========================================================================== */
+
+/* Leaflet divIcon wrappers: zero-size box, child centred on the point */
+.leaflet-marker-icon.rs-divicon,
+.leaflet-marker-icon.rs-tc-marker {
+  background: none;
+  border: 0;
+}
+.rs-isobar-label,
+.rs-pcentre {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.rs-isobar-label {
+  font: 500 10px/1 var(--font-mono);
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 0 2px #000, 0 0 2px #000;
+}
+.rs-pcentre {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  text-shadow: 0 0 3px #000, 0 0 2px #000;
+}
+.rs-pcentre-L { color: #f87171; }
+.rs-pcentre-H { color: #60a5fa; }
+.rs-pcentre-letter {
+  font: 800 18px/1 var(--font-sans);
+}
+.rs-pcentre-hpa {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-main);
+}
+.rs-pcentre-tag {
+  margin-top: 2px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  font: 500 9px/1.2 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-shadow: none;
+}
+
+/* Cyclone marker: 28px ring coloured by GDACS alert, name below */
+.rs-tc-icon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid #22c55e;
+  background: rgba(6, 11, 20, 0.75);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+.rs-tc-icon[data-alert="Orange"] { border-color: #f59e0b; }
+.rs-tc-icon[data-alert="Red"] { border-color: #ef4444; }
+.rs-tc-icon[data-stale="1"] { opacity: 0.6; border-style: dashed; }
+.rs-tc-glyph {
+  font-size: 15px;
+  line-height: 1;
+}
+.rs-tc-name {
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  font: 600 10px/1.3 var(--font-sans);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+.rs-tc-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 190px;
+  font: 400 12px/1.4 var(--font-sans);
+  color: #0f172a;
+}
+.rs-tc-popup-name { font-weight: 700; font-size: 13px; }
+.rs-tc-popup-alert { font: 600 11px/1.3 var(--font-mono); text-transform: uppercase; }
+.rs-tc-popup-note { font-size: 11px; color: #475569; }
+.rs-tc-popup-links a { color: #0369a1; font-weight: 600; }
+
+/* Legend (bottom-left map control) */
+.rs-india-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: calc(100vw - 96px);
+  padding: 6px 8px;
+  background: rgba(11, 18, 32, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  font: 500 9.5px/1.3 var(--font-mono);
+  color: var(--text-muted);
+}
+.rs-india-legend[hidden],
+.rs-il-row[hidden] {
+  display: none;
+}
+.rs-il-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 6px;
+}
+.rs-il-title {
+  font-weight: 700;
+  color: var(--text-main);
+}
+.rs-wl-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.rs-wl-sw {
+  display: inline-block;
+  width: 14px;
+  height: 6px;
+  border-radius: 2px;
+}
+.rs-tc-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid #22c55e;
+}
+.rs-il-text {
+  color: var(--text-muted);
+}
+
+/* "All India" button next to "Layers" in the desktop map control */
+.rs-india-btn {
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Active-cyclone banner in the status card */
+.rs-cyclone-alert {
+  display: block;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid #22c55e;
+  border-radius: var(--radius-sm);
+  background: rgba(34, 197, 94, 0.1);
+  font: 500 12.5px/1.45 var(--font-sans);
+  color: var(--text-main);
+}
+.rs-cyclone-alert[hidden] {
+  display: none;
+}
+.rs-cyclone-alert[data-alert="Orange"] {
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+}
+.rs-cyclone-alert[data-alert="Red"] {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.13);
+}
+.rs-cyclone-alert a {
+  color: var(--primary-cyan);
+  font-weight: 600;
+  text-decoration: underline;
+}
+.m-peek-alert[hidden] {
+  display: none;
+}
+
+/* ==========================================================================
    MAP-FIRST MOBILE (phones <= 768px, body.m-map set by app.js)
    Full-screen radar map + draggable bottom sheet. Solid surfaces only: no
    backdrop blur, no looping animations, only the sheet is transformed.
@@ -3153,6 +3337,33 @@ body.rain-theme {
   body.m-map .toast-container {
     top: calc(var(--safe-top) + 72px) !important;
     bottom: auto !important;
+  }
+
+  /* 9 condition cards in 2 columns: radar spans the last row */
+  body.m-map .metric-card[data-metric="radar"] {
+    grid-column: 1 / -1;
+  }
+
+  /* India layers on the phone map */
+  body.m-map .m-peek-alert {
+    display: block;
+    font: 600 12px/1.3 var(--font-sans);
+    color: #4ade80;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  body.m-map .m-peek-alert[data-alert="Orange"] { color: #fbbf24; }
+  body.m-map .m-peek-alert[data-alert="Red"] { color: #f87171; }
+  body.m-map .m-peek-alert[hidden] {
+    display: none;
+  }
+  body.m-map .rs-india-legend {
+    font-size: 9px;
+    padding: 5px 7px;
+  }
+  body.m-map .rs-cyclone-alert {
+    font-size: 13px;
   }
 }
 

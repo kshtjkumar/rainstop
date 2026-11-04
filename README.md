@@ -42,13 +42,15 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
    - **Radar loop**: the last ~2 h of RainViewer frames (−2 h … now) with play/scrub, on phones and under the desktop map.
    - **Forecast model map (experimental)**: +1 … +6 h hourly rain from a 7 × 7 Open-Meteo grid (~13 km spacing, model resolution ~10–25 km), continuing the same timeline and always labelled **FORECAST MODEL**, never radar.
    - **Satellite IR clouds** (NASA GIBS, JMA Himawari, ~1–2 h old) as an optional layer.
-   - **Layer toggles**: radar, forecast rain, satellite clouds, trip route (remembered per browser).
+   - **India wind & pressure (model, off by default)**: zoom out to India (or tap **India**) for 10-m wind arrows coloured by speed (0 / 10 / 20 / 31 / 50 / 62 / 89+ km/h — the upper bins are the IMD depression … severe cyclonic storm thresholds), MSL isobars every 2 hPa and model **L/H** centres. Lows are tagged with the strongest nearby model wind ("Depression-strength winds · model est., not IMD"); they are coarse 2° global-model output, **not IMD lows or depressions**. Drawn only at zoom ≤ 7; the local rain grid only at zoom ≥ 7. Static vectors, no animation.
+   - **Cyclones (GDACS, on by default)**: active North Indian Ocean storms with position, track (TD/TS/HU), uncertainty cone and 60/90/120 km/h wind zones; tap the storm for max wind, last advisory time (flagged "may have weakened" after 48 h) and links to the GDACS report and IMD. When the storm's current position or its **forecast** track (the past path is ignored) comes within ~800 km of your start point a banner (status card + phone peek) says e.g. "🌀 Cyclone NAME ~380 km SW of you · GDACS Red · max wind 157 km/h. Not an official warning — follow IMD." — or "… forecast track passes ~380 km WSW of you …" when the nearest point is on the forecast track. The banner only ever comes from GDACS storms, never from model lows. A quiet day (GDACS answers HTTP 204, empty body) clears any old storm.
+   - **Layer toggles**: radar, forecast rain, satellite clouds, wind, pressure & lows, cyclones, trip route (remembered per browser). Each toggle's sub-line reports failures ("India model map unavailable", "Cyclone feed unavailable") or "Zoom out or tap India to view".
    - Desktop keeps OpenStreetMap tiles with the dark filter; overlays sit in their own map panes so the filter never recolours radar.
    - Along-path ribbon: forecast rain (median across models) at the time you pass origin, midpoint and destination. Weather is fetched for the origin point.
    - Photon OpenStreetMap geocoder providing instant autocomplete for any place on Earth.
 
 5. **🌡️ Conditions Card**:
-   - Feels-like (+ actual) temperature, rain chance + amount for the next hour, wind with compass direction and gusts, humidity, UV now/max with level, cloud cover, sunrise/sunset (next one highlighted) and radar status.
+   - Feels-like (+ actual) temperature, rain chance + amount for the next hour, wind with compass direction and gusts, humidity, UV now/max with level, cloud cover, sunrise/sunset (next one highlighted), **sea-level pressure with its 3-hour tendency** ("falling 2.1 hPa / 3 h"; "steady" within ±1 hPa; a fall of ≥ 4 hPa is highlighted) and radar status.
    - **Next 12 hours chart**: rain chance bars (coloured by amount) with a temperature line.
 
 6. **🛡️ Resilient Data Pipeline**:
@@ -58,7 +60,7 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
    - **Rain Here / Dry Here** buttons: your ground report adjusts the next ~30 min only; the forecast still drives the rest.
 
 7. **📱 Progressive Web App (PWA) & Offline Resiliency**:
-   - Service Worker (v10) with Network-First caching for app files; weather, radar, satellite and map tiles are never cached by the service worker.
+   - Service Worker (v13) with Network-First caching for app files; weather, cyclone (GDACS), radar, satellite and map tiles are never cached by the service worker.
    - Installable on iOS Safari and Android Chrome as a native standalone app.
 
 ---
@@ -81,6 +83,8 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
 | RainViewer radar frames | Map loop, last ~2 h (13 × 10 min) | 5 min |
 | Open-Meteo forecast grid (49 points, one request) | Experimental forecast rain map, +1 … +6 h | 30 min (cached 45 min) |
 | [NASA GIBS](https://earthdata.nasa.gov/gibs) Himawari AHI band 13 | Satellite IR clouds, ~1–2 h old | on view |
+| Open-Meteo India grid (289 points, 17×17 at 2°, one request) | 10-m wind arrows, MSL isobars, model L/H | 60 min, lazy at India zoom (cached 90 min) |
+| [GDACS](https://www.gdacs.org/) (EC JRC / UN) | Active N Indian Ocean cyclones: position, track, wind zones, alert level | 30 min (offline: cache ≤ 6 h, shown "as of") |
 
 \* Outside Central Europe / North America, Open-Meteo's 15-minute data is interpolated from hourly model output.
 
@@ -103,6 +107,7 @@ RainStop is a commute planner that tells you **when you can leave** and how wet 
 | Nothing | Falls back to "Forecast Unavailable" + manual Rain/Dry buttons |
 
 **Limits**: forecasts in India are hourly-model based; there is no radar nowcast (RainViewer discontinued it); weather is fetched for the start point only; probabilities are model agreement, not calibrated against observations. The forecast rain map is a coarse **model** field (not radar) and its colours are approximate; satellite clouds are ~1–2 h old.
+Wind / pressure layers are a coarse 2° model grid: they miss small or sharp systems, model lows are **not** IMD lows/depressions, and MSL pressure over high terrain is extrapolated (centres over > 1000 m are dropped). They draw only at zoom ≤ 7 (use the **India** button) and each refresh costs 289 Open-Meteo calls, so they are off by default. GDACS is a global alert service, **not** the official warning: for India that is RSMC New Delhi — [IMD](https://mausam.imd.gov.in/). A storm whose last advisory is > 48 h old is shown but marked stale and ignored by the banner. The pressure tendency uses the hourly series requested with `past_hours=3` (+ `forecast_hours=48`), so it is available right after local midnight too.
 
 ---
 
@@ -139,6 +144,7 @@ Run automated unit and physics verification tests:
 ```bash
 node test_leave_engine.js   # leave-time engine, failure matrix (offline, mocked APIs)
 node test_map_layers.js     # rain map timeline, forecast grid, metrics, chart, sheet snapping
+node test_india_layers.js   # India wind/isobars/L-H, GDACS cyclones + banner, pressure metric
 node test_rainstop.js
 node test_route.js
 node test_transport_mode.js
